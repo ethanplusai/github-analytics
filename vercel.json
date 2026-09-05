@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "outputDirectory": "bin",
   "functions": {
-    "server.js": { "maxDuration": 60 }
+    "server.js": { "maxDuration": 60, "includeFiles": "public/**" }
   },
   "crons": [{ "path": "/api/poll", "schedule": "0 6 * * *" }]
 }
