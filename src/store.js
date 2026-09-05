@@ -295,6 +295,42 @@ export class Store {
     return { day, items: rows.map(plain) };
   }
 
+  // Every day that has any snapshot for this repo, in order — the set of days
+  // the migration has to walk.
+  async snapshotDays(repoId) {
+    const rows = await this.driver.query(`
+      SELECT day FROM window_snapshots WHERE repo_id = ?
+      UNION SELECT day FROM referrer_snapshots WHERE repo_id = ?
+      UNION SELECT day FROM path_snapshots WHERE repo_id = ?
+      ORDER BY day ASC
+    `, [repoId, repoId, repoId]);
+    return rows.map((r) => r.day);
+  }
+
+  async windowSnapshot(repoId, day, kind) {
+    const rows = await this.driver.query(
+      'SELECT count, uniques FROM window_snapshots WHERE repo_id = ? AND day = ? AND kind = ?',
+      [repoId, day, kind],
+    );
+    return plain(rows[0] ?? null);
+  }
+
+  async referrersOn(repoId, day) {
+    const rows = await this.driver.query(
+      'SELECT referrer, count, uniques FROM referrer_snapshots WHERE repo_id = ? AND day = ? ORDER BY referrer',
+      [repoId, day],
+    );
+    return rows.map(plain);
+  }
+
+  async pathsOn(repoId, day) {
+    const rows = await this.driver.query(
+      'SELECT path, title, count, uniques FROM path_snapshots WHERE repo_id = ? AND day = ? ORDER BY path',
+      [repoId, day],
+    );
+    return rows.map(plain);
+  }
+
   async referrerHistory(repoId, referrer) {
     const rows = await this.driver.query(`
       SELECT day, count, uniques FROM referrer_snapshots

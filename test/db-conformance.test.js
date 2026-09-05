@@ -20,6 +20,21 @@ async function exercise(store) {
   await store.ingestReferrers(repo.id, '2026-01-02', [{ referrer: 'google.com', count: 5, uniques: 3 }]);
   await store.ingestPaths(repo.id, '2026-01-02', [{ path: '/a/b', title: 'a/b', count: 5, uniques: 3 }]);
 
+  // Different numbers from the views series above, so the clones and
+  // unique_cloners arms of TOTALS_SELECT can't be confused with the views
+  // and unique_visitors arms — a bug isolated to one CASE arm would still
+  // pass if both kinds carried the same figures.
+  await store.ingestTrafficSeries(repo.id, 'clones', [
+    { timestamp: '2026-01-01T00:00:00Z', count: 7, uniques: 2 },
+    { timestamp: '2026-01-02T00:00:00Z', count: 15, uniques: 6 },
+  ], '2026-01-02T00:00:00Z');
+
+  // The only place the two schemas actually differ — GENERATED ALWAYS AS
+  // IDENTITY vs AUTOINCREMENT, and the INSERT ... RETURNING id path — so it
+  // must be exercised here, not just left to the repos table.
+  const pollRunId = await store.startPollRun('2026-01-02T00:00:00Z');
+  await store.finishPollRun(pollRunId, { total: 1, ok: 1, failed: 0, at: '2026-01-02T00:05:00Z' });
+
   return {
     repo: { ...(await store.getRepo('a/b')), id: null, addedAt: null },
     totals: await store.totals(repo.id, null),
@@ -31,6 +46,10 @@ async function exercise(store) {
     count: await store.countTrackedRepos(),
     summaries: (await store.repoSummaries({ sinceDay: null, sparkSinceDay: '2026-01-01' }))
       .map((s) => ({ ...s, id: null, addedAt: null })),
+    // Ids legitimately differ between engines (IDENTITY vs AUTOINCREMENT
+    // assign independently), so normalise it the same way repo/summary ids
+    // are normalised above — only the shape and the other fields matter.
+    lastPollRun: { ...(await store.lastPollRun()), id: null },
   };
 }
 
