@@ -129,6 +129,18 @@ while its stored traffic history is left untouched.
 Backfilled rows carry no watcher count. GitHub publishes no timestamp for
 subscribers, so any number there would be invented.
 
+**What the reconstruction can and cannot see.** GitHub's stargazer and fork lists
+contain only the people who *currently* star or fork a repository, each with the
+date they arrived. So the rebuilt curve answers "when did today's stargazers
+arrive?", not "how many stars did this repo have on that day". Anyone who starred
+and later unstarred is absent from the whole history, which means a past peak that
+has since receded is invisible and the curve can never fall. Expect a small step
+where the reconstruction meets the first polled day: the backfill counts forks that
+exist now and were created then, while the poller records GitHub's live
+`forks_count`, and the two are not the same number if a fork's parent has since
+gone private or been deleted. Everything recorded from the first poll onward is a
+direct reading and has none of these caveats.
+
 ## Running it on the internet
 
 The app has an optional login (`GHA_PASSWORD`): a single shared passphrase, a signed session cookie, no accounts and no per-user anything. It's off by default for local use. Anyone who can reach an instance with it off can see every tracked repository's name and its traffic, private repos included, so it is **required** for any public deployment that holds private repositories.
