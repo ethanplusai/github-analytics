@@ -156,6 +156,46 @@ test('verify catches a snapshot row that went missing from the target without re
   assert.ok(result.mismatches.some((m) => m.field === 'referrers'));
 });
 
+// Regression: SQLite (BINARY collation) and Postgres (locale collation)
+// order text differently among rows tied on count — e.g. SQLite puts
+// 'Google' before 'chatgpt.com', Postgres the other way — even though the
+// SQL for both sides orders `count DESC, referrer ASC` identically. verify()
+// must not report a mismatch on data that copied perfectly just because the
+// two engines handed the rows back in a different order.
+test('verify reports no mismatch when referrer rows are identical but returned in a different order', async () => {
+  const source = freshStore();
+  await source.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b', private: false }, '2026-01-01T00:00:00Z');
+  const repo = await source.getRepo('a/b');
+  await source.ingestReferrers(repo.id, '2026-01-02', [
+    { referrer: 'Google', count: 5, uniques: 3 },
+    { referrer: 'chatgpt.com', count: 5, uniques: 2 },
+    { referrer: 'bing.com', count: 1, uniques: 1 },
+  ]);
+
+  const target = freshStore();
+  const migrated = await migrate({ from: source, to: target, log: () => {} });
+  assert.deepEqual(migrated.mismatches, [], 'the copy itself is intact before we simulate a collation difference');
+
+  // Simulate the target engine (e.g. Postgres) handing back the tied-count
+  // rows in a different, but equally valid, order — without touching the
+  // SQL or the data itself.
+  const copied = await target.getRepo('a/b');
+  const original = target.latestReferrers.bind(target);
+  target.latestReferrers = async (repoId, limit) => {
+    const result = await original(repoId, limit);
+    return { ...result, items: [...result.items].reverse() };
+  };
+
+  assert.notDeepEqual(
+    (await target.latestReferrers(copied.id, 50)).items,
+    (await source.latestReferrers(repo.id, 50)).items,
+    'sanity check: the stub actually produces a different order',
+  );
+
+  const result = await verify({ from: source, to: target, log: () => {} });
+  assert.deepEqual(result.mismatches, []);
+});
+
 test('verify catches a repo entirely absent from the target', async () => {
   const source = freshStore();
   await seed(source);

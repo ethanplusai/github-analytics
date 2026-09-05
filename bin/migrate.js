@@ -3,6 +3,21 @@ import { Store } from '../src/store.js';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { loadConfig } from '../src/config.js';
 
+// `latestReferrers`/`latestPaths` order their rows `count DESC, <text> ASC`
+// in SQL, but SQLite (BINARY collation) and Postgres (locale collation, e.g.
+// `en_US.UTF-8`) do not agree on text order for entries tied on count — so
+// two rows that copied perfectly can still come back in a different order
+// on each side. Sorting by a stable key here, in JS, before comparing makes
+// the check independent of either engine's collation; the SQL and the UI's
+// ordering are untouched.
+function sortedBy(items, key) {
+  return [...items].sort((a, b) => (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0));
+}
+
+function normaliseList(result, key) {
+  return { ...result, items: sortedBy(result.items, key) };
+}
+
 // Verification is by comparison, not trust: every field listed here is read
 // back from both sides and compared. A repo with zero window/referrer/path
 // snapshots still gets a real check — `latestWindow`/`latestReferrers`/
@@ -13,8 +28,12 @@ async function compareRepo(from, to, sourceRepoId, targetRepoId) {
     ['totals', () => from.totals(sourceRepoId, null), () => to.totals(targetRepoId, null)],
     ['coverage', () => from.coverage(sourceRepoId), () => to.coverage(targetRepoId)],
     ['window', () => from.latestWindow(sourceRepoId), () => to.latestWindow(targetRepoId)],
-    ['referrers', () => from.latestReferrers(sourceRepoId, 50), () => to.latestReferrers(targetRepoId, 50)],
-    ['paths', () => from.latestPaths(sourceRepoId, 50), () => to.latestPaths(targetRepoId, 50)],
+    ['referrers',
+      async () => normaliseList(await from.latestReferrers(sourceRepoId, 50), 'referrer'),
+      async () => normaliseList(await to.latestReferrers(targetRepoId, 50), 'referrer')],
+    ['paths',
+      async () => normaliseList(await from.latestPaths(sourceRepoId, 50), 'path'),
+      async () => normaliseList(await to.latestPaths(targetRepoId, 50), 'path')],
     ['snapshotDayCount',
       async () => (await from.snapshotDays(sourceRepoId)).length,
       async () => (await to.snapshotDays(targetRepoId)).length],
@@ -162,5 +181,12 @@ async function main() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  main().catch((err) => {
+    console.error(`\nMigration failed: ${err.message}`);
+    console.error(
+      'Re-running the migration is safe: repos upsert on full_name, traffic upserts monotonically, ' +
+      'and snapshots are replaced per (repo, day) — nothing already copied will be duplicated or lowered.',
+    );
+    process.exit(1);
+  });
 }
