@@ -51,6 +51,7 @@ Everything has a working default. You shouldn't need any of these.
 | `GITHUB_TOKEN` | — | Token to use, ahead of everything else |
 | `GH_TOKEN` | — | Same, checked second |
 | `PORT` | `4319` | Port to bind. If it's taken, the next 20 are tried |
+| `GHA_PORT` | `4319` | Same as `PORT`, checked second |
 | `GHA_HOST` | `127.0.0.1` | Interface to bind |
 | `GHA_DATA_DIR` | `~/.github-analytics` | Where the database lives |
 | `GHA_DB_PATH` | `<data dir>/analytics.db` | Override the database file directly |
@@ -58,6 +59,7 @@ Everything has a working default. You shouldn't need any of these.
 | `GHA_AUTO_SEED` | `1` | Discover and add your repos on first launch |
 | `GHA_OPEN` | `1` | Open a browser on start |
 | `GHA_ALLOWED_HOSTS` | — | Extra `Host` values to accept, for a reverse proxy |
+| `GHA_API_BASE_URL` | `https://api.github.com` | GitHub API base URL. Override to point at a mock server for testing |
 | `POSTGRES_URL` | — | Postgres/Neon connection string. When set, traffic is stored there instead of SQLite (`DATABASE_URL` also works — either name is read) |
 | `GHA_POLL_MODE` | `interval`, or `cron` when `VERCEL` is set | `interval` runs the built-in timer; `cron` disables it and waits for `GET /api/poll` to be called from outside instead |
 | `CRON_SECRET` | — | Bearer token required by `GET /api/poll`. With none set, that endpoint refuses every request rather than run unauthenticated |
@@ -91,7 +93,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for both.
 ## Development
 
 ```bash
-npm test     # 169 passing, 1 skipped, no network access required
+npm test     # 172 passing, 1 skipped, no network access required
 npm run dev  # restarts on change
 ```
 

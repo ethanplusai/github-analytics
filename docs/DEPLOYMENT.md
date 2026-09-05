@@ -232,8 +232,11 @@ Concretely, with Deployment Protection off, all of the following need no credent
 - `POST /api/poll` — triggers a full poll of every tracked repository.
 - `POST /api/repos` — adds a repository to track.
 - `DELETE /api/repos/:owner/:repo` — untracks one.
+- `POST /api/seed` — discovers every repository the token can read traffic for, adds all of them, and then triggers a full poll, in one call.
 
 `GET /api/poll` is the one route with its own credential: it requires `Authorization: Bearer $CRON_SECRET`, because that's the request Vercel Cron makes. `CRON_SECRET` protects that single route and nothing else — it was never meant to be, and cannot be, the deployment's security boundary. Deployment Protection is.
+
+One more route is worth naming even though it doesn't change anything stored: `GET /api/available-repos` is also unauthenticated and calls GitHub's API directly (list every repo the token can see), rather than the database. It changes no state, but without Deployment Protection it lets anyone spend calls against the token's GitHub API rate limit — bounded somewhat by a 5-minute in-memory cache, but still free to trigger from outside.
 
 ### A note on the cron schedule and plan
 
