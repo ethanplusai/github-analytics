@@ -262,6 +262,12 @@ Use a password-manager-generated value of **30 or more characters**, not a memor
 
 Add the custom domain (for example `github.ethanplus.ai`) to the project and complete the DNS record Vercel gives you. Repeat the verification from step 5 against the real hostname before considering this done: on Hobby, the custom domain must redirect to `/login`; on Pro/Enterprise with Deployment Protection enabled, it must show the Vercel login page instead.
 
+### `GHA_SECURE_COOKIES`
+
+The session cookie defaults to the `Secure` flag and `__Host-` prefix when the deployment is reachable beyond loopback — both Vercel and self-hosted behind a reverse proxy. This default is correct for both documented public deployment shapes. Do not override it unless TLS is genuinely terminated by a layer this app cannot see, and only then if you understand the trade.
+
+Setting `GHA_SECURE_COOKIES=0` removes both protections: the `Secure` flag allows the session cookie to travel in cleartext over unencrypted connections, and removing the `__Host-` prefix allows the cookie to be shadowed by a sibling subdomain. On a public HTTPS deployment holding private repository data, this strips security the login depends on.
+
 ### Why the `Host` check isn't the security boundary
 
 It's worth being specific about what does and doesn't guard this app on its own, because the `Host` check documented earlier in this file is easy to mistake for one. It isn't. That check exists to stop a webpage you're browsing from driving a *loopback* server; on Vercel, `GHA_ALLOWED_HOSTS` must contain the production domain for the app to work at all, and once it does, any direct request that simply sets that `Host` header passes the guard from anywhere on the internet. The `Origin` check alongside it only rejects browser-driven cross-site requests — a plain script never sends a same-origin `Origin` header and is never touched by it.

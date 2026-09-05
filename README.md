@@ -66,7 +66,7 @@ Everything has a working default. You shouldn't need any of these.
 | `GHA_POLL_DEADLINE_MS` | `45000` | How long `GET /api/poll` may run before it stops starting new repos and returns. Must stay below the deployment's function `maxDuration` (`vercel.json` sets that to `60` seconds on Vercel's Hobby plan) — otherwise the platform kills the invocation first and the poll lock isn't released until its TTL expires |
 | `GHA_PASSWORD` | — | Passphrase for the built-in login. When set, every route except `GET /api/poll` requires a signed session cookie, issued at `/login`. Once the app is reachable beyond loopback — serverless (`VERCEL` set), or self-hosted with `GHA_ALLOWED_HOSTS` set — it refuses to start with this unset unless `GHA_ALLOW_PUBLIC=1` is also set, and refuses a passphrase whose trimmed length is under 20 characters. Use a password manager's generated value, not a memorable phrase — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | `GHA_ALLOW_PUBLIC` | `0` | Deliberate override that lets a deployment reachable beyond loopback start with no `GHA_PASSWORD`. Doing so puts every tracked repository's name and full traffic history on the open web for anyone who finds the URL |
-| `GHA_SECURE_COOKIES` | Auto: on when reachable beyond loopback (`VERCEL` set, or `GHA_ALLOWED_HOSTS` set), off otherwise | Overrides whether the session cookie is issued `Secure` and `__Host-`-prefixed. Only needed for an unusual topology (e.g. TLS terminated somewhere this process can't see); the default already matches both public deployment shapes this app documents |
+| `GHA_SECURE_COOKIES` | Auto: on when reachable beyond loopback (`VERCEL` set, or `GHA_ALLOWED_HOSTS` set), off otherwise | Overrides whether the session cookie is issued `Secure` and `__Host-`-prefixed. Setting it to `0` removes these protections: the session cookie can travel in cleartext and can be shadowed by a sibling subdomain. On a public HTTPS deployment, this strips security the login depends on. Only set to `0` when TLS is terminated by a layer this app cannot see, and only if you understand the trade. The default is correct for both documented public deployment shapes |
 
 ## Your data
 
@@ -99,7 +99,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full picture, including wha
 ## Development
 
 ```bash
-npm test     # 236 passing, 1 skipped, no network access required
+npm test     # 258 passing, 1 skipped, no network access required
 npm run dev  # restarts on change
 ```
 
