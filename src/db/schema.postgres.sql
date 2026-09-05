@@ -67,3 +67,13 @@ CREATE TABLE IF NOT EXISTS poll_runs (
   ok          INTEGER NOT NULL DEFAULT 0,
   failed      INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS repo_metrics_daily (
+  repo_id     INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  day         TEXT NOT NULL,
+  stars       INTEGER NOT NULL,
+  forks       INTEGER NOT NULL,
+  watchers    INTEGER,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, day)
+);

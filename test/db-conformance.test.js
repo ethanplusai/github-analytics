@@ -63,6 +63,13 @@ async function exercise(store) {
   const pollRunId = await store.startPollRun('2026-01-02T00:00:00Z');
   await store.finishPollRun(pollRunId, { total: 1, ok: 1, failed: 0, at: '2026-01-02T00:05:00Z' });
 
+  // Two days with different star/fork counts, so a GREATEST upsert (correct
+  // for traffic_daily, wrong here) would be caught by a mismatch between
+  // engines only if one drifted — the point of this table is a plain
+  // last-write-wins replace, exercised identically on both engines below.
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 10, forks: 2, watchers: 3 }, '2026-01-01T00:00:00Z');
+  await store.recordRepoMetrics(repo.id, '2026-01-02', { stars: 8, forks: 5, watchers: null }, '2026-01-02T00:00:00Z');
+
   return {
     repo: { ...(await store.getRepo('a/b')), id: null, addedAt: null },
     totals: await store.totals(repo.id, null),
@@ -71,6 +78,8 @@ async function exercise(store) {
     window: await store.latestWindow(repo.id),
     referrers: await store.latestReferrers(repo.id, 10),
     paths: await store.latestPaths(repo.id, 10),
+    metricsSeries: await store.metricsSeries(repo.id, null),
+    latestMetrics: await store.latestMetrics(repo.id),
     count: await store.countTrackedRepos(),
     summaries: (await store.repoSummaries({ sinceDay: null, sparkSinceDay: '2026-01-01' }))
       .map((s) => ({ ...s, id: null, addedAt: null })),
@@ -98,7 +107,7 @@ test('sqlite and postgres return identical results', async (t) => {
 
   const { createPostgresDriver } = await import('../src/db/postgres.js');
   const driver = await createPostgresDriver(url);
-  await driver.run('DROP TABLE IF EXISTS traffic_daily, window_snapshots, referrer_snapshots, path_snapshots, poll_runs, meta, repos CASCADE', []);
+  await driver.run('DROP TABLE IF EXISTS traffic_daily, window_snapshots, referrer_snapshots, path_snapshots, repo_metrics_daily, poll_runs, meta, repos CASCADE', []);
   const { readFileSync } = await import('node:fs');
   const schema = readFileSync(new URL('../src/db/schema.postgres.sql', import.meta.url), 'utf8');
   for (const statement of splitSqlStatements(schema)) {
@@ -109,10 +118,10 @@ test('sqlite and postgres return identical results', async (t) => {
   assert.deepEqual(fromPostgres, fromSqlite);
 });
 
-test('splitSqlStatements produces exactly the schema\'s eight statements, none split inside the CHECK constraint\'s parenthesised list', () => {
+test('splitSqlStatements produces exactly the schema\'s nine statements, none split inside the CHECK constraint\'s parenthesised list', () => {
   const schema = readFileSync(new URL('../src/db/schema.postgres.sql', import.meta.url), 'utf8');
   const statements = splitSqlStatements(schema);
-  assert.equal(statements.length, 8);
+  assert.equal(statements.length, 9);
   for (const statement of statements) {
     assert.equal((statement.match(/;/g) ?? []).length, 1, 'each statement carries exactly one terminating semicolon');
   }
