@@ -397,8 +397,15 @@ export class Store {
     return rows.length > 0;
   }
 
-  async releasePollLock() {
-    await this.driver.run("DELETE FROM meta WHERE key = 'poll_lock'", []);
+  // Owner-scoped on purpose: only the holder that wrote THIS expiry may
+  // delete it. An unscoped delete would let a run that overran its TTL
+  // release a lock a later run had legitimately stolen, defeating the
+  // exclusivity this lock exists to provide.
+  async releasePollLock(expiresAtIso) {
+    await this.driver.run(
+      "DELETE FROM meta WHERE key = 'poll_lock' AND value = ?",
+      [expiresAtIso],
+    );
   }
 
   async listDueRepos(limit) {

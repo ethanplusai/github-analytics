@@ -335,7 +335,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
       const result = await poller.pollDue({ limit: POLL_BATCH, deadlineMs: POLL_DEADLINE_MS });
       sendJson(res, 200, { ...result, seeded });
     } finally {
-      await store.releasePollLock();
+      await store.releasePollLock(expiresAt);
     }
   });
 

@@ -342,8 +342,38 @@ test('the poll lock is exclusive and expires', async () => {
   assert.equal(await store.acquirePollLock('2026-01-01T00:30:00Z', '2026-01-01T01:30:00Z'), false);
   // A crashed run must not wedge polling forever: an expired lock is stolen.
   assert.equal(await store.acquirePollLock('2026-01-01T02:00:00Z', '2026-01-01T03:00:00Z'), true);
-  await store.releasePollLock();
+  await store.releasePollLock('2026-01-01T03:00:00Z');
   assert.equal(await store.acquirePollLock('2026-01-01T02:05:00Z', '2026-01-01T03:05:00Z'), true);
+});
+
+test('releasePollLock frees the lock when the expiry matches the current holder', async () => {
+  const store = freshStore();
+  assert.equal(await store.acquirePollLock('2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z'), true);
+  await store.releasePollLock('2026-01-01T01:00:00Z');
+  // Freed: an acquire well before the original expiry now succeeds.
+  assert.equal(await store.acquirePollLock('2026-01-01T00:10:00Z', '2026-01-01T01:10:00Z'), true);
+});
+
+test('releasePollLock does nothing when the expiry does not match the current holder', async () => {
+  const store = freshStore();
+  assert.equal(await store.acquirePollLock('2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z'), true);
+  await store.releasePollLock('some-other-expiry');
+  // Still held: an acquire before the real expiry is denied, exactly as if
+  // release had never been called.
+  assert.equal(await store.acquirePollLock('2026-01-01T00:10:00Z', '2026-01-01T01:10:00Z'), false);
+});
+
+test('a stale holder cannot release a lock a later run has legitimately stolen', async () => {
+  const store = freshStore();
+  // Run A acquires with expiry E1, then overruns past E1 without ever
+  // seeing its own release fire in time.
+  assert.equal(await store.acquirePollLock('2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z'), true); // A: E1 = 01:00
+  // Run B ticks in after E1 has passed and legitimately steals the lock.
+  assert.equal(await store.acquirePollLock('2026-01-01T01:30:00Z', '2026-01-01T02:30:00Z'), true); // B: E2 = 02:30
+  // A finally runs late and tries to release using ITS OWN (stale) expiry.
+  await store.releasePollLock('2026-01-01T01:00:00Z');
+  // B's lock must still be held: an acquire attempt before E2 is denied.
+  assert.equal(await store.acquirePollLock('2026-01-01T01:45:00Z', '2026-01-01T02:45:00Z'), false);
 });
 
 test('listDueRepos puts never-polled repos first, then the stalest', async () => {
