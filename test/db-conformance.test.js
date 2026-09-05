@@ -5,6 +5,34 @@ import { execFileSync } from 'node:child_process';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
 
+// Neon's HTTP endpoint uses the extended query protocol, where a single
+// prepared statement may only contain one command — so the whole schema
+// file can't be sent through one driver.run() call the way SQLite's exec()
+// accepts it. This splits on statement-terminating semicolons while
+// tracking single-quoted string state, so a semicolon inside a string
+// literal (none exist in this schema today, but the CHECK's parenthesised
+// list `('clones','views')` is exactly the kind of construct that must not
+// be split on) would not break the split either.
+export function splitSqlStatements(sql) {
+  const statements = [];
+  let current = '';
+  let inString = false;
+  for (const ch of sql) {
+    current += ch;
+    if (inString) {
+      if (ch === "'") inString = false;
+      continue;
+    }
+    if (ch === "'") { inString = true; continue; }
+    if (ch === ';') {
+      statements.push(current);
+      current = '';
+    }
+  }
+  if (current.trim()) statements.push(current);
+  return statements.map((s) => s.trim()).filter(Boolean);
+}
+
 async function exercise(store) {
   await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b', private: true }, '2026-01-01T00:00:00Z');
   const repo = await store.getRepo('a/b');
@@ -72,10 +100,26 @@ test('sqlite and postgres return identical results', async (t) => {
   const driver = await createPostgresDriver(url);
   await driver.run('DROP TABLE IF EXISTS traffic_daily, window_snapshots, referrer_snapshots, path_snapshots, poll_runs, meta, repos CASCADE', []);
   const { readFileSync } = await import('node:fs');
-  await driver.run(readFileSync(new URL('../src/db/schema.postgres.sql', import.meta.url), 'utf8'), []);
+  const schema = readFileSync(new URL('../src/db/schema.postgres.sql', import.meta.url), 'utf8');
+  for (const statement of splitSqlStatements(schema)) {
+    await driver.run(statement, []);
+  }
 
   const fromPostgres = await exercise(new Store(driver));
   assert.deepEqual(fromPostgres, fromSqlite);
+});
+
+test('splitSqlStatements produces exactly the schema\'s eight statements, none split inside the CHECK constraint\'s parenthesised list', () => {
+  const schema = readFileSync(new URL('../src/db/schema.postgres.sql', import.meta.url), 'utf8');
+  const statements = splitSqlStatements(schema);
+  assert.equal(statements.length, 8);
+  for (const statement of statements) {
+    assert.equal((statement.match(/;/g) ?? []).length, 1, 'each statement carries exactly one terminating semicolon');
+  }
+  // The CHECK constraint's parenthesised list must survive intact within a
+  // single statement, not be cut across two.
+  const trafficDaily = statements.find((s) => s.includes('traffic_daily'));
+  assert.match(trafficDaily, /CHECK \(kind IN \('clones','views'\)\)/);
 });
 
 test('no local-path module statically imports the Neon driver', () => {
