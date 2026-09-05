@@ -98,6 +98,37 @@ test('getViews tolerates a 200 with an empty body instead of throwing', async ()
   assert.deepEqual(result.points, []);
 });
 
+test('listStargazerDates sends the star+json Accept header', async () => {
+  const fetchImpl = async (url, init) => {
+    assert.equal(init.headers.Accept, 'application/vnd.github.star+json');
+    return jsonResponse([{ starred_at: '2026-01-01T00:00:00Z', user: { login: 'octo' } }]);
+  };
+  const client = new GitHubClient({ token: 'ghp_x', fetchImpl });
+  const dates = await client.listStargazerDates('a/b');
+  assert.deepEqual(dates, ['2026-01-01T00:00:00Z']);
+});
+
+test('request still sends the default Accept when none is given', async () => {
+  const fetchImpl = async (url, init) => {
+    assert.equal(init.headers.Accept, 'application/vnd.github+json');
+    return jsonResponse({ full_name: 'a/b' });
+  };
+  await new GitHubClient({ token: 'ghp_x', fetchImpl }).getRepo('a/b');
+});
+
+test('listForkDates returns created_at for each fork', async () => {
+  const client = new GitHubClient({
+    token: 't',
+    fetchImpl: fakeFetch({
+      '/repos/octo/hello/forks?per_page=100&page=1': jsonResponse([
+        { full_name: 'someone/hello', created_at: '2026-02-01T00:00:00Z' },
+      ]),
+    }),
+  });
+  const dates = await client.listForkDates('octo/hello');
+  assert.deepEqual(dates, ['2026-02-01T00:00:00Z']);
+});
+
 test('listOwnedRepos follows pagination until a short page', async () => {
   const page = (n) => Array.from({ length: n }, (_, i) => ({
     full_name: `octo/r${i}`, name: `r${i}`, owner: { login: 'octo' },
@@ -107,8 +138,8 @@ test('listOwnedRepos follows pagination until a short page', async () => {
   const client = new GitHubClient({
     token: 't',
     fetchImpl: fakeFetch({
-      '/user/repos?per_page=100&affiliation=owner&sort=pushed&page=1': jsonResponse(page(100)),
-      '/user/repos?per_page=100&affiliation=owner&sort=pushed&page=2': jsonResponse(page(4)),
+      '/user/repos?affiliation=owner&sort=pushed&per_page=100&page=1': jsonResponse(page(100)),
+      '/user/repos?affiliation=owner&sort=pushed&per_page=100&page=2': jsonResponse(page(4)),
     }),
   });
   const repos = await client.listOwnedRepos();
