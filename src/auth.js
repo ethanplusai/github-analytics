@@ -1,16 +1,28 @@
-import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
+import { createHmac, timingSafeEqual, createHash, scryptSync } from 'node:crypto';
 
 const COOKIE_NAME = 'gha_session';
+// __Host- makes browsers refuse the cookie unless it is Secure, Path=/, and
+// carries no Domain attribute — that stops a sibling subdomain from setting
+// a cookie that shadows ours. It can't be used on plain http, so it's only
+// applied when the caller tells us the connection is secure.
+const HOST_PREFIX = '__Host-';
 const VERSION = 'v1';
 const DEFAULT_TTL_MS = 30 * 24 * 3600 * 1000;
 
 export function parseCookies(header) {
-  const out = {};
+  // No prototype, so a cookie literally named "constructor" or "toString"
+  // can't shadow-read as an inherited function for a caller doing a bare
+  // property lookup.
+  const out = Object.create(null);
   if (!header) return out;
   for (const part of String(header).split(';')) {
     const index = part.indexOf('=');
     if (index === -1) continue;
-    out[part.slice(0, index).trim()] = part.slice(index + 1).trim();
+    const key = part.slice(0, index).trim();
+    // First-wins: most cookie parsers do this, and it makes a duplicate,
+    // attacker-supplied cookie name harder to use as a shadowing trick.
+    if (key in out) continue;
+    out[key] = part.slice(index + 1).trim();
   }
   return out;
 }
@@ -28,10 +40,14 @@ export function createAuth({ passphrase, sessionSecret = null, now = () => Date.
   const secretSource = typeof passphrase === 'string' ? passphrase.trim() : '';
   const enabled = secretSource.length > 0;
 
-  // Derived from the passphrase by default, so changing the passphrase
-  // invalidates every existing session without a second variable to manage.
+  // A slow KDF, so a captured cookie cannot be turned into an offline
+  // passphrase-cracking oracle. Derived once at construction, never per
+  // request, so the cost is paid at startup (and once per serverless cold
+  // start), not on the hot path. The salt is fixed rather than random
+  // because the derivation MUST be deterministic: separate serverless
+  // instances have to agree on the key or users get randomly logged out.
   const key = enabled
-    ? (sessionSecret || createHmac('sha256', secretSource).update('gha-session-v1').digest('base64url'))
+    ? (sessionSecret || scryptSync(secretSource, 'gha-session-v1', 32).toString('base64url'))
     : null;
 
   const sign = (payload) => createHmac('sha256', key).update(payload).digest('base64url');
@@ -46,10 +62,15 @@ export function createAuth({ passphrase, sessionSecret = null, now = () => Date.
     },
 
     issueCookie({ secure }) {
+      // Fails closed rather than crashing inside createHmac on a null key —
+      // a caller should only ever reach here after enabled/checkPassphrase
+      // have already gated access, so this is a programmer-error guard.
+      if (!enabled) throw new Error('auth is disabled; cannot issue a session cookie');
       const exp = now() + ttlMs;
       const payload = `${VERSION}.${exp}`;
+      const name = secure ? `${HOST_PREFIX}${COOKIE_NAME}` : COOKIE_NAME;
       const parts = [
-        `${COOKIE_NAME}=${payload}.${sign(payload)}`,
+        `${name}=${payload}.${sign(payload)}`,
         'Path=/',
         'HttpOnly',
         'SameSite=Lax',
@@ -60,14 +81,22 @@ export function createAuth({ passphrase, sessionSecret = null, now = () => Date.
     },
 
     clearCookie({ secure }) {
-      const parts = [`${COOKIE_NAME}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+      // Clear the name matching how it would have been issued, or the
+      // browser won't recognize this as the same cookie to delete.
+      const name = secure ? `${HOST_PREFIX}${COOKIE_NAME}` : COOKIE_NAME;
+      const parts = [`${name}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
       if (secure) parts.push('Secure');
       return parts.join('; ');
     },
 
     isAuthenticated(req) {
       if (!enabled) return false;
-      const raw = parseCookies(req?.headers?.cookie)[COOKIE_NAME];
+      const cookies = parseCookies(req?.headers?.cookie);
+      // Prefer the __Host- cookie when present: browsers only ever let a
+      // legitimate response set that name over https with Path=/ and no
+      // Domain, so it can't have been shadowed by a sibling subdomain. Fall
+      // back to the plain name only for local, plain-http deployments.
+      const raw = cookies[`${HOST_PREFIX}${COOKIE_NAME}`] ?? cookies[COOKIE_NAME];
       if (!raw) return false;
       const segments = raw.split('.');
       if (segments.length !== 3) return false;

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { createAuth, parseCookies } from '../src/auth.js';
 
 const PASS = 'correct-horse-battery-staple-9f3a';
@@ -87,10 +88,12 @@ test('clearCookie expires the session immediately', () => {
 });
 
 test('parseCookies handles multiple values and spacing', () => {
-  assert.deepEqual(parseCookies('a=1; b=2'), { a: '1', b: '2' });
-  assert.deepEqual(parseCookies('a=1;b=2'), { a: '1', b: '2' });
-  assert.deepEqual(parseCookies(''), {});
-  assert.deepEqual(parseCookies(undefined), {});
+  // parseCookies returns a null-prototype object (see the dedicated test
+  // below), so spread into a plain object before comparing shapes.
+  assert.deepEqual({ ...parseCookies('a=1; b=2') }, { a: '1', b: '2' });
+  assert.deepEqual({ ...parseCookies('a=1;b=2') }, { a: '1', b: '2' });
+  assert.deepEqual({ ...parseCookies('') }, {});
+  assert.deepEqual({ ...parseCookies(undefined) }, {});
 });
 
 // --- Adversarial tests beyond the brief ---
@@ -135,4 +138,102 @@ test('two createAuth instances built from the same passphrase accept each others
   const value = /gha_session=([^;]+)/.exec(a.issueCookie({ secure: true }))[1];
   const req = { headers: { cookie: `gha_session=${value}` } };
   assert.equal(b.isAuthenticated(req), true);
+});
+
+// --- Fix-round 1: mutation-testing findings ---
+//
+// These tests use an explicit `sessionSecret` override so the test itself
+// can forge a validly-SIGNED cookie with a tampered version or exp — that's
+// the only way to prove the version/exp checks matter on their own, rather
+// than merely riding on a signature failure that would reject the forgery
+// for the wrong reason.
+
+const FORGE_SECRET = 'fixed-test-secret-for-forgery';
+
+function forge(secret, payload) {
+  const sig = createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+test('a cookie with a VALID signature but an altered version is rejected (I2)', () => {
+  const now = () => 1_000_000;
+  const auth = createAuth({ passphrase: PASS, sessionSecret: FORGE_SECRET, now, ttlMs: 1000 });
+  const exp = now() + 1000;
+  const forged = forge(FORGE_SECRET, `v2.${exp}`);
+  assert.equal(auth.isAuthenticated({ headers: { cookie: `gha_session=${forged}` } }), false);
+});
+
+test('an exp that coerces to Infinity is rejected even with a VALID signature (I2)', () => {
+  // "1e999" parses via Number() to Infinity. Without the Number.isFinite
+  // guard, `Infinity <= now()` is false, so this would never expire.
+  const now = () => 1_000_000;
+  const auth = createAuth({ passphrase: PASS, sessionSecret: FORGE_SECRET, now, ttlMs: 1000 });
+  const forged = forge(FORGE_SECRET, 'v1.1e999');
+  assert.equal(auth.isAuthenticated({ headers: { cookie: `gha_session=${forged}` } }), false);
+});
+
+test('checkPassphrase does not throw for a candidate wildly different in length from the passphrase (I2)', () => {
+  // This is the functional signature of the digest-first design: hashing
+  // both sides to a fixed 32-byte length before timingSafeEqual is what
+  // keeps this from ever throwing, regardless of how mismatched the raw
+  // input lengths are.
+  const auth = createAuth({ passphrase: PASS });
+  assert.doesNotThrow(() => {
+    assert.equal(auth.checkPassphrase('x'), false);
+    assert.equal(auth.checkPassphrase('x'.repeat(10000)), false);
+  });
+});
+
+test('clearCookie carries HttpOnly, SameSite=Lax and Path=/ so it actually clears a cookie set with those flags (I3)', () => {
+  const auth = createAuth({ passphrase: PASS });
+  const cleared = auth.clearCookie({ secure: true });
+  assert.match(cleared, /HttpOnly/);
+  assert.match(cleared, /SameSite=Lax/);
+  assert.match(cleared, /Path=\//);
+});
+
+test('issueCookie on a disabled instance fails closed with a clear error, not a crash on a null key (I4)', () => {
+  const auth = createAuth({ passphrase: null });
+  assert.throws(() => auth.issueCookie({ secure: true }), /disabled/);
+});
+
+test('parseCookies has no inherited properties, so a lookup for a name never present cannot read an inherited function', () => {
+  const result = parseCookies('a=1');
+  assert.equal(result.constructor, undefined);
+  assert.equal(result.toString, undefined);
+  assert.equal(Object.getPrototypeOf(result), null);
+});
+
+test('parseCookies keeps the first value when a name repeats (first-wins)', () => {
+  assert.deepEqual({ ...parseCookies('a=1; a=2') }, { a: '1' });
+});
+
+test('issueCookie uses the __Host- prefix when secure, and isAuthenticated accepts it', () => {
+  const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
+  const setCookie = auth.issueCookie({ secure: true });
+  assert.match(setCookie, /^__Host-gha_session=/);
+  const value = /gha_session=([^;]+)/.exec(setCookie)[1];
+  const req = { headers: { cookie: `__Host-gha_session=${value}` } };
+  assert.equal(auth.isAuthenticated(req), true);
+});
+
+test('issueCookie omits the __Host- prefix when not secure, for plain http', () => {
+  const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
+  const setCookie = auth.issueCookie({ secure: false });
+  assert.match(setCookie, /^gha_session=/);
+  assert.doesNotMatch(setCookie, /__Host-/);
+  const value = /gha_session=([^;]+)/.exec(setCookie)[1];
+  const req = { headers: { cookie: `gha_session=${value}` } };
+  assert.equal(auth.isAuthenticated(req), true);
+});
+
+test('a shadowing plain-named cookie does not displace a valid __Host- cookie', () => {
+  const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
+  const setCookie = auth.issueCookie({ secure: true });
+  const value = /gha_session=([^;]+)/.exec(setCookie)[1];
+  // A bogus plain-named cookie riding alongside the real __Host- one must
+  // not win — the __Host- cookie is the one a sibling subdomain could never
+  // have set.
+  const req = { headers: { cookie: `gha_session=garbage; __Host-gha_session=${value}` } };
+  assert.equal(auth.isAuthenticated(req), true);
 });
