@@ -137,6 +137,25 @@ test('GET /api/status prefers the live poller state over the persisted one', asy
   });
 });
 
+test('GET /api/status reports dataPath as the sqlite file by default', async () => {
+  await withApi({ config: { pollIntervalHours: 6, dbPath: '/tmp/x.db' } }, async (base) => {
+    const body = await (await fetch(`${base}/api/status`)).json();
+    assert.equal(body.dataPath, '/tmp/x.db');
+  });
+});
+
+// Regression: dataPath used to report config.dbPath unconditionally, which
+// on a Postgres deployment is a SQLite file that doesn't exist. It must
+// name the actual target instead — and never leak the connection string.
+test('GET /api/status reports the Postgres target, not a meaningless sqlite path, when POSTGRES_URL is set', async () => {
+  const postgresUrl = 'postgres://user:secret-password@example.neon.tech/db';
+  await withApi({ config: { pollIntervalHours: 6, dbPath: '/tmp/x.db', postgresUrl } }, async (base) => {
+    const body = await (await fetch(`${base}/api/status`)).json();
+    assert.equal(body.dataPath, 'neon postgres');
+    assert.doesNotMatch(JSON.stringify(body), /secret-password/);
+  });
+});
+
 test('GET /api/status without a token says so instead of failing', async () => {
   await withApi({ tokenInfo: { token: null, source: null, login: null } }, async (base) => {
     const res = await fetch(`${base}/api/status`);
