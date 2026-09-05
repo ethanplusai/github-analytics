@@ -434,6 +434,17 @@ test('GET /api/poll runs when the token matches', async () => {
   });
 });
 
+test('GET /api/poll passes the configured batch to the poller', async () => {
+  let seenLimit = null;
+  const poller = stubPoller({
+    pollDue: async ({ limit }) => { seenLimit = limit; return { total: 0, ok: 0, failed: 0, remaining: 0 }; },
+  });
+  await withApi({ client: {}, poller, config: { ...cronConfig, pollBatch: 7 } }, async (base) => {
+    await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } });
+  });
+  assert.equal(seenLimit, 7);
+});
+
 test('GET /api/poll reports 409 while another run holds the lock', async () => {
   await withApi({ client: {}, config: cronConfig }, async (base, store) => {
     await store.acquirePollLock('2026-09-04T12:00:00Z', '2099-01-01T00:00:00Z');

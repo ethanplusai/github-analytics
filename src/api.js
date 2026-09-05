@@ -6,7 +6,6 @@ import { FULL_NAME_RE, normaliseRepo, GitHubError } from './github.js';
 const MAX_SERIES_DAYS = 3650;
 const AVAILABLE_REPOS_TTL_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 10 * 60 * 1000;
-const POLL_BATCH = 40;
 
 // Constant-time compare that does not leak length through an early return.
 function timingSafeEqualString(a, b) {
@@ -334,7 +333,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
     try {
       let seeded = null;
       if (!await store.getMeta('seeded_at')) seeded = await poller.seedFromGitHub();
-      const result = await poller.pollDue({ limit: POLL_BATCH, deadlineMs: config.pollDeadlineMs });
+      const result = await poller.pollDue({ limit: config.pollBatch, deadlineMs: config.pollDeadlineMs });
       sendJson(res, 200, { ...result, seeded });
     } finally {
       await store.releasePollLock(expiresAt);
