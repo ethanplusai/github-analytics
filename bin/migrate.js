@@ -3,6 +3,64 @@ import { Store } from '../src/store.js';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { loadConfig } from '../src/config.js';
 
+// Verification is by comparison, not trust: every field listed here is read
+// back from both sides and compared. A repo with zero window/referrer/path
+// snapshots still gets a real check — `latestWindow`/`latestReferrers`/
+// `latestPaths` returning the same "nothing yet" shape on both sides is
+// itself a pass, not something to skip.
+async function compareRepo(from, to, sourceRepoId, targetRepoId) {
+  const checks = [
+    ['totals', () => from.totals(sourceRepoId, null), () => to.totals(targetRepoId, null)],
+    ['coverage', () => from.coverage(sourceRepoId), () => to.coverage(targetRepoId)],
+    ['window', () => from.latestWindow(sourceRepoId), () => to.latestWindow(targetRepoId)],
+    ['referrers', () => from.latestReferrers(sourceRepoId, 50), () => to.latestReferrers(targetRepoId, 50)],
+    ['paths', () => from.latestPaths(sourceRepoId, 50), () => to.latestPaths(targetRepoId, 50)],
+    ['snapshotDayCount',
+      async () => (await from.snapshotDays(sourceRepoId)).length,
+      async () => (await to.snapshotDays(targetRepoId)).length],
+  ];
+
+  const mismatches = [];
+  let coverage = null;
+  for (const [field, readSource, readTarget] of checks) {
+    const [source, target] = [await readSource(), await readTarget()];
+    if (field === 'coverage') coverage = source;
+    if (JSON.stringify(source) !== JSON.stringify(target)) {
+      mismatches.push({ field, source, target });
+    }
+  }
+  return { mismatches, coverage };
+}
+
+// Compares every already-copied repo between the two stores, independent of
+// the copy step itself. Exported on its own — not just inlined into
+// `migrate` — so it can be re-run against an existing copy without touching
+// it: the thing that proves a copy arrived intact must be able to run
+// without also being the thing that could paper over a gap by re-copying it.
+export async function verify({ from, to, log = console.log }) {
+  const repos = await from.listRepos({ includeUntracked: true });
+  const mismatches = [];
+
+  for (const repo of repos) {
+    const target = await to.getRepo(repo.fullName);
+    if (!target) {
+      mismatches.push({ repo: repo.fullName, field: 'presence', source: 'present', target: 'missing' });
+      log(`  MISMATCH ${repo.fullName} (missing from target)`);
+      continue;
+    }
+
+    const { mismatches: repoMismatches, coverage } = await compareRepo(from, to, repo.id, target.id);
+    if (repoMismatches.length > 0) {
+      for (const m of repoMismatches) mismatches.push({ repo: repo.fullName, ...m });
+      log(`  MISMATCH ${repo.fullName} (${repoMismatches.map((m) => m.field).join(', ')})`);
+    } else {
+      log(`  ok ${repo.fullName} — traffic, window, referrers and paths verified — ${coverage.days} days`);
+    }
+  }
+
+  return { mismatches };
+}
+
 // Reads through the source Store and writes through the target Store, so both
 // sides go through the same validated SQL rather than raw dumped rows. Safe to
 // run twice: repos upsert on full_name, traffic upserts monotonically, and
@@ -10,7 +68,6 @@ import { loadConfig } from '../src/config.js';
 export async function migrate({ from, to, log = console.log }) {
   const repos = await from.listRepos({ includeUntracked: true });
   let trafficRows = 0;
-  const mismatches = [];
 
   for (const repo of repos) {
     const target = await to.upsertRepo({
@@ -41,30 +98,23 @@ export async function migrate({ from, to, log = console.log }) {
 
     if (!repo.tracked) await to.untrackRepo(repo.fullName, repo.untrackedAt ?? repo.addedAt);
     if (repo.lastPolledAt) await to.markPolled(target.id, { at: repo.lastPolledAt, error: repo.lastError });
-
-    const [sourceTotals, targetTotals] = [await from.totals(repo.id, null), await to.totals(target.id, null)];
-    const [sourceCoverage, targetCoverage] = [await from.coverage(repo.id), await to.coverage(target.id)];
-    if (JSON.stringify(sourceTotals) !== JSON.stringify(targetTotals)
-      || JSON.stringify(sourceCoverage) !== JSON.stringify(targetCoverage)) {
-      mismatches.push({ repo: repo.fullName, sourceTotals, targetTotals, sourceCoverage, targetCoverage });
-      log(`  MISMATCH ${repo.fullName}`);
-    } else {
-      log(`  ok ${repo.fullName} — ${sourceCoverage.days} days`);
-    }
   }
 
   const seededAt = await from.getMeta('seeded_at');
   if (seededAt) await to.setMeta('seeded_at', seededAt);
 
+  const { mismatches } = await verify({ from, to, log });
   return { repos: repos.length, trafficRows, mismatches };
 }
 
 // --- CLI ------------------------------------------------------------------
 //
 // Invoked directly: copy the real local history into the real Neon database.
-// The source is opened read/write by the driver (SQLite has no read-only
-// connection mode here), but `migrate()` never calls anything on `from`
-// except reads — see the loop above, which only ever writes through `to`.
+// The source is opened with SQLite's own read-only connection mode — no WAL
+// switch, no schema creation, no user_version bump — so it is provably, not
+// just intentionally, never written to. `migrate()` only ever writes through
+// `to` regardless, but this is the source's only copy of data GitHub has
+// already deleted, so the open itself must not touch it either.
 async function main() {
   const config = loadConfig();
 
@@ -76,10 +126,22 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Source:      ${config.dbPath}`);
+  console.log(`Source:      ${config.dbPath} (read-only)`);
   console.log('Target:      Postgres (POSTGRES_URL)');
 
-  const source = new Store(createSqliteDriver(config.dbPath));
+  let source;
+  try {
+    source = new Store(createSqliteDriver(config.dbPath, { readOnly: true }));
+  } catch (err) {
+    console.error(
+      `Could not open ${config.dbPath} read-only: ${err.message}. ` +
+      `Make a backup copy first (sqlite3 ${config.dbPath} ".backup /tmp/gha-migrate.db") ` +
+      'and re-run with GHA_DB_PATH=/tmp/gha-migrate.db',
+    );
+    process.exit(1);
+    return;
+  }
+
   const { createPostgresDriver } = await import('../src/db/postgres.js');
   const target = new Store(await createPostgresDriver(config.postgresUrl));
 
@@ -87,11 +149,11 @@ async function main() {
     const result = await migrate({ from: source, to: target, log: console.log });
     console.log(`\n${result.repos} repos, ${result.trafficRows} traffic rows copied.`);
     if (result.mismatches.length > 0) {
-      console.error(`${result.mismatches.length} repo(s) failed verification:`);
+      console.error(`${result.mismatches.length} field mismatch(es) across the copy:`);
       for (const m of result.mismatches) console.error(JSON.stringify(m, null, 2));
       process.exitCode = 1;
     } else {
-      console.log('All repos verified: totals and coverage match on both sides.');
+      console.log('All repos verified: totals, coverage, window, referrers and paths match on both sides.');
     }
   } finally {
     await source.close();

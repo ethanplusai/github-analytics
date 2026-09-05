@@ -14,9 +14,16 @@ function toPlainRows(rows) {
   return rows.map((row) => ({ ...row }));
 }
 
-export function createSqliteDriver(dbPath) {
-  if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new DatabaseSync(dbPath);
+// `readOnly: true` opens the file with SQLite's own read-only connection
+// mode and skips every statement that would write to it — no WAL mode
+// switch, no schema creation, no user_version bump. It exists for exactly
+// one caller: migrating a database (like the user's sole, unrecoverable
+// local history) that must be provably never written to, not merely never
+// written to on purpose. The default (`readOnly: false`) is byte-for-byte
+// the driver this project always had.
+export function createSqliteDriver(dbPath, { readOnly = false } = {}) {
+  if (!readOnly && dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
+  const db = readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath);
 
   // Postgres spells the two-argument maximum GREATEST(a, b); SQLite spells it
   // max(a, b) and has no GREATEST. The store's SQL is written once, in the
@@ -28,17 +35,28 @@ export function createSqliteDriver(dbPath) {
   // plain `a > b ? a : b` also gets this wrong on its own terms: JS coerces
   // null to 0 for the comparison, so greatest(null, -5) would wrongly pick
   // the null branch instead of -5.
+  //
+  // Registered on the read-only connection too — it's per-connection, kept
+  // in memory only, and never touches the file.
   db.function('greatest', (a, b) => {
     if (a === null || a === undefined) return b ?? null;
     if (b === null || b === undefined) return a;
     return a > b ? a : b;
   });
 
-  if (dbPath !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA foreign_keys = ON');
-  db.exec('PRAGMA busy_timeout = 5000');
-  db.exec(readFileSync(join(HERE, 'schema.sqlite.sql'), 'utf8'));
-  db.exec('PRAGMA user_version = 1');
+  if (readOnly) {
+    // busy_timeout is a connection-level setting, not a file write, and
+    // works the same on a read-only connection — verified against a real
+    // WAL database. journal_mode, the schema, and user_version are all
+    // skipped here because each one writes to the file.
+    db.exec('PRAGMA busy_timeout = 5000');
+  } else {
+    if (dbPath !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec('PRAGMA busy_timeout = 5000');
+    db.exec(readFileSync(join(HERE, 'schema.sqlite.sql'), 'utf8'));
+    db.exec('PRAGMA user_version = 1');
+  }
 
   return {
     dialect: 'sqlite',

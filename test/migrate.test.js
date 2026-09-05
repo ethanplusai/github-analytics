@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
-import { migrate } from '../bin/migrate.js';
+import { migrate, verify } from '../bin/migrate.js';
 
 function freshStore() {
   return new Store(createSqliteDriver(':memory:'));
@@ -126,6 +126,42 @@ test('migrate reports a mismatch when the copy diverges from the source', async 
   ], '2026-01-05T00:00:00Z');
 
   const result = await migrate({ from: source, to: target, log: () => {} });
-  assert.equal(result.mismatches.length, 1);
-  assert.equal(result.mismatches[0].repo, 'a/b');
+  assert.ok(result.mismatches.length > 0);
+  assert.ok(result.mismatches.every((m) => m.repo === 'a/b'));
+});
+
+test('verify catches a snapshot row that went missing from the target without re-copying over it', async () => {
+  const source = freshStore();
+  await seed(source);
+
+  const target = freshStore();
+  await migrate({ from: source, to: target, log: () => {} });
+
+  // Delete a referrer snapshot row directly from the target, bypassing
+  // migrate() entirely, to prove verify() actually reads the target back
+  // rather than trusting that migrate() put everything there.
+  const copied = await target.getRepo('a/b');
+  await target.driver.run(
+    'DELETE FROM referrer_snapshots WHERE repo_id = ? AND day = ? AND referrer = ?',
+    [copied.id, '2026-01-02', 'g.com'],
+  );
+
+  // A plain re-run of migrate() would silently repair this (ingestReferrers
+  // replaces the whole day), so verification must be callable on its own,
+  // against the copy as it actually stands.
+  const result = await verify({ from: source, to: target, log: () => {} });
+
+  assert.ok(result.mismatches.length > 0);
+  assert.ok(result.mismatches.every((m) => m.repo === 'a/b'));
+  assert.ok(result.mismatches.some((m) => m.field === 'referrers'));
+});
+
+test('verify catches a repo entirely absent from the target', async () => {
+  const source = freshStore();
+  await seed(source);
+  const target = freshStore();
+
+  const result = await verify({ from: source, to: target, log: () => {} });
+  assert.ok(result.mismatches.length > 0);
+  assert.ok(result.mismatches.some((m) => m.repo === 'a/b' && m.field === 'presence'));
 });
