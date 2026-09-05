@@ -185,6 +185,27 @@ export class Poller {
     return { seeded, polled, error: null };
   }
 
+  // Bounded by both a count and a wall clock so an invocation always returns
+  // before the platform's function limit. Repos not reached this run are
+  // simply the stalest next run — and because GitHub re-reports 14 days on
+  // every call, nothing is lost by deferring one.
+  async pollDue({ limit = 25, deadlineMs = 45000 } = {}) {
+    const startedMs = Date.now();
+    const repos = await this.store.listDueRepos(limit);
+    let ok = 0;
+    let failed = 0;
+    let started = 0;
+
+    for (const repo of repos) {
+      if (Date.now() - startedMs > deadlineMs) break;
+      started += 1;
+      const result = await this.pollRepo(repo);
+      if (result.ok) ok += 1; else failed += 1;
+    }
+
+    return { total: started, ok, failed, remaining: repos.length - started };
+  }
+
   start(intervalHours = this.intervalHours) {
     this.intervalHours = intervalHours;
     this.timer = setInterval(() => {

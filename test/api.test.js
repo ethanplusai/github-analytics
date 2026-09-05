@@ -13,17 +13,22 @@ function stubPoller(over = {}) {
     getState: () => ({ running: false, total: 0, done: 0, failed: 0, currentRepo: null, lastRunAt: null, lastResult: null }),
     pollRepo: async (repo) => ({ fullName: repo.fullName, ok: true, error: null }),
     pollAll: async () => ({ total: 0, ok: 0, failed: 0 }),
+    pollDue: async () => ({ total: 0, ok: 0, failed: 0, remaining: 0 }),
     seedFromGitHub: async () => ({ added: 0, skipped: 0, total: 0 }),
     ...over,
   };
 }
 
-async function withApi({ storeSetup = () => {}, poller = stubPoller(), client = null, tokenInfo = { token: 't', source: 'test', login: 'octo' } } = {}, fn) {
+async function withApi({
+  storeSetup = () => {}, poller = stubPoller(), client = null,
+  tokenInfo = { token: 't', source: 'test', login: 'octo' },
+  config = { pollIntervalHours: 6, dbPath: '/tmp/x.db' },
+} = {}, fn) {
   const store = new Store(createSqliteDriver(':memory:'));
   await storeSetup(store);
   const router = createApi({
     store, poller, client, tokenInfo,
-    config: { pollIntervalHours: 6, dbPath: '/tmp/x.db' },
+    config,
     version: '1.0.0', now: () => NOW,
   });
   const server = createServer(async (req, res) => {
@@ -375,5 +380,53 @@ test('POST /api/poll starts a run in the background and reports skips', async ()
   }, async (base) => {
     const res = await fetch(`${base}/api/poll`, { method: 'POST' });
     assert.equal(res.status, 202, 'a background run always answers 202');
+  });
+});
+
+const cronConfig = { pollIntervalHours: 6, dbPath: '/tmp/x.db', cronSecret: 'test-secret' };
+
+test('GET /api/poll rejects a request with no bearer token', async () => {
+  await withApi({ client: {}, config: cronConfig }, async (base) => {
+    const res = await fetch(`${base}/api/poll`);
+    assert.equal(res.status, 401);
+  });
+});
+
+test('GET /api/poll rejects a wrong bearer token', async () => {
+  await withApi({ client: {}, config: cronConfig }, async (base) => {
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer wrong' } });
+    assert.equal(res.status, 401);
+  });
+});
+
+test('GET /api/poll refuses when no secret is configured, rather than running open', async () => {
+  await withApi({ client: {} }, async (base) => {
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } });
+    assert.equal(res.status, 401);
+  });
+});
+
+test('GET /api/poll runs when the token matches', async () => {
+  const poller = stubPoller({ pollDue: async () => ({ total: 2, ok: 2, failed: 0, remaining: 0 }) });
+  await withApi({ client: {}, poller, config: cronConfig }, async (base) => {
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).total, 2);
+  });
+});
+
+test('GET /api/poll reports 409 while another run holds the lock', async () => {
+  await withApi({ client: {}, config: cronConfig }, async (base, store) => {
+    await store.acquirePollLock('2026-09-04T12:00:00Z', '2099-01-01T00:00:00Z');
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } });
+    assert.equal(res.status, 409);
+  });
+});
+
+test('GET /api/poll releases the lock even when the poll throws', async () => {
+  const poller = stubPoller({ pollDue: async () => { throw new Error('boom'); } });
+  await withApi({ client: {}, poller, config: cronConfig }, async (base, store) => {
+    await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } }).catch(() => {});
+    assert.equal(await store.getMeta('poll_lock'), null);
   });
 });

@@ -380,6 +380,36 @@ export class Store {
     });
   }
 
+  // --- poll lock --------------------------------------------------------
+
+  // A single statement, so two concurrent cron invocations cannot both win:
+  // the row is inserted if absent, and otherwise only updated when the
+  // existing expiry has passed. Zero rows back means someone else holds it.
+  // ISO-8601 UTC strings compare lexicographically in date order, which is
+  // what lets the comparison live in SQL and stay identical on both engines.
+  async acquirePollLock(nowIso, expiresAtIso) {
+    const rows = await this.driver.query(`
+      INSERT INTO meta (key, value) VALUES ('poll_lock', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      WHERE meta.value < ?
+      RETURNING value
+    `, [expiresAtIso, nowIso]);
+    return rows.length > 0;
+  }
+
+  async releasePollLock() {
+    await this.driver.run("DELETE FROM meta WHERE key = 'poll_lock'", []);
+  }
+
+  async listDueRepos(limit) {
+    const rows = await this.driver.query(`
+      SELECT * FROM repos WHERE tracked = 1
+      ORDER BY COALESCE(last_polled_at, '') ASC, full_name ASC
+      LIMIT ?
+    `, [limit]);
+    return rows.map(plainRepo);
+  }
+
   // --- poll runs ------------------------------------------------------
 
   async startPollRun(nowIso) {

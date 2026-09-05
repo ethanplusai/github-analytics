@@ -335,3 +335,24 @@ test('the schema persists across reopening the same file', async (t) => {
   assert.equal((await s2.dailySeries((await s2.getRepo('octo/hello')).id, 'views'))[0].count, 4);
   await s2.close();
 });
+
+test('the poll lock is exclusive and expires', async () => {
+  const store = freshStore();
+  assert.equal(await store.acquirePollLock('2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z'), true);
+  assert.equal(await store.acquirePollLock('2026-01-01T00:30:00Z', '2026-01-01T01:30:00Z'), false);
+  // A crashed run must not wedge polling forever: an expired lock is stolen.
+  assert.equal(await store.acquirePollLock('2026-01-01T02:00:00Z', '2026-01-01T03:00:00Z'), true);
+  await store.releasePollLock();
+  assert.equal(await store.acquirePollLock('2026-01-01T02:05:00Z', '2026-01-01T03:05:00Z'), true);
+});
+
+test('listDueRepos puts never-polled repos first, then the stalest', async () => {
+  const store = freshStore();
+  for (const [name, polledAt] of [['a/one', '2026-01-03T00:00:00Z'], ['a/two', null], ['a/three', '2026-01-01T00:00:00Z']]) {
+    await store.upsertRepo({ fullName: name, owner: 'a', name: name.split('/')[1] }, '2026-01-01T00:00:00Z');
+    const repo = await store.getRepo(name);
+    if (polledAt) await store.markPolled(repo.id, { at: polledAt });
+  }
+  const due = await store.listDueRepos(2);
+  assert.deepEqual(due.map((r) => r.fullName), ['a/two', 'a/three']);
+});

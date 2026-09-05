@@ -1,9 +1,24 @@
+import { timingSafeEqual } from 'node:crypto';
 import { createRouter, sendJson, sendError, readJsonBody } from './http.js';
 import { todayUtc, daysAgoUtc } from './db.js';
 import { FULL_NAME_RE, normaliseRepo, GitHubError } from './github.js';
 
 const MAX_SERIES_DAYS = 3650;
 const AVAILABLE_REPOS_TTL_MS = 5 * 60 * 1000;
+const LOCK_TTL_MS = 10 * 60 * 1000;
+const POLL_BATCH = 40;
+const POLL_DEADLINE_MS = 45_000;
+
+// Constant-time compare that does not leak length through an early return.
+function timingSafeEqualString(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return timingSafeEqual(bufA, bufB);
+}
 
 const RANGE_DAYS = { 30: 30, 90: 90, 365: 365 };
 
@@ -289,6 +304,39 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
   router.post('/api/poll', async (req, res) => {
     poller.pollAll().catch(() => {});
     sendJson(res, 202, { started: true });
+  });
+
+  router.get('/api/poll', async (req, res) => {
+    // Vercel sends `Authorization: Bearer $CRON_SECRET` automatically when
+    // CRON_SECRET is set on the project. With no secret configured the
+    // endpoint stays closed rather than open — this route can spend the
+    // GitHub token, so failing open would be the wrong default.
+    const expected = config.cronSecret;
+    const provided = req.headers.authorization ?? '';
+    if (!expected || !timingSafeEqualString(provided, `Bearer ${expected}`)) {
+      sendError(res, 401, 'unauthorized', 'This endpoint requires the cron secret.');
+      return;
+    }
+    if (!client) {
+      sendError(res, 503, 'no_token', 'No GitHub token is configured.');
+      return;
+    }
+
+    const startedAt = now();
+    const expiresAt = new Date(startedAt.getTime() + LOCK_TTL_MS).toISOString();
+    if (!await store.acquirePollLock(startedAt.toISOString(), expiresAt)) {
+      sendError(res, 409, 'already_running', 'Another poll run holds the lock.');
+      return;
+    }
+
+    try {
+      let seeded = null;
+      if (!await store.getMeta('seeded_at')) seeded = await poller.seedFromGitHub();
+      const result = await poller.pollDue({ limit: POLL_BATCH, deadlineMs: POLL_DEADLINE_MS });
+      sendJson(res, 200, { ...result, seeded });
+    } finally {
+      await store.releasePollLock();
+    }
   });
 
   router.post('/api/seed', async (req, res) => {

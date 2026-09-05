@@ -255,3 +255,38 @@ test('bootstrap does not throw when the polling phase fails', async () => {
   assert.deepEqual(result.polled, { error: 'boom' }, 'polling failure is captured in the same shape as a seeding failure');
   assert.equal(result.error, null, 'the top-level error field is reserved for no_token');
 });
+
+test('pollDue stops starting repos once the deadline passes', async () => {
+  const { store, poller } = setup();
+  for (const name of ['a/1', 'a/2', 'a/3', 'a/4', 'a/5']) {
+    await store.upsertRepo({ fullName: name, owner: 'a', name: name.slice(2) }, '2026-01-01T00:00:00Z');
+  }
+
+  // Each simulated poll costs 1s against a 2.5s budget, so exactly three start.
+  let elapsed = 0;
+  poller.pollRepo = async (repo) => { elapsed += 1000; return { fullName: repo.fullName, ok: true }; };
+  const realNow = Date.now;
+  const base = realNow();
+  Date.now = () => base + elapsed;
+  try {
+    const result = await poller.pollDue({ limit: 5, deadlineMs: 2500 });
+    assert.equal(result.total, 3);
+    assert.equal(result.ok, 3);
+    assert.equal(result.remaining, 2);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('pollDue takes the stalest repos first', async () => {
+  const { store, poller } = setup();
+  for (const [name, at] of [['a/fresh', '2026-09-04T11:00:00Z'], ['a/stale', '2026-01-01T00:00:00Z']]) {
+    await store.upsertRepo({ fullName: name, owner: 'a', name: name.slice(2) }, '2026-01-01T00:00:00Z');
+    const repo = await store.getRepo(name);
+    await store.markPolled(repo.id, { at });
+  }
+  const polled = [];
+  poller.pollRepo = async (repo) => { polled.push(repo.fullName); return { fullName: repo.fullName, ok: true }; };
+  await poller.pollDue({ limit: 1, deadlineMs: 60000 });
+  assert.deepEqual(polled, ['a/stale']);
+});
