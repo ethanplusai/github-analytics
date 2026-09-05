@@ -206,6 +206,20 @@ PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH" \
 
 It prints a line per repository and finishes with a mismatch count. That count must be zero; if it isn't, stop and investigate rather than deploy on top of a partial migration. `bin/migrate.js` opens the local SQLite file read-only, so it's safe to re-run.
 
+**Then run one more check by hand, on both databases.** The script's own verification compares per-repo totals, coverage and the latest snapshot day, plus how many distinct snapshot days each repo has — it does not walk every middle day's snapshot rows and compare them individually. That's the one gap a clean migrate run doesn't close, and this data cannot be re-fetched once it's wrong, so it's worth the extra minute. Run this on both databases and compare the five numbers:
+
+```sql
+SELECT (SELECT count(*) FROM repos), (SELECT count(*) FROM traffic_daily), (SELECT count(*) FROM window_snapshots), (SELECT count(*) FROM referrer_snapshots), (SELECT count(*) FROM path_snapshots);
+```
+
+On SQLite:
+
+```bash
+sqlite3 ~/.github-analytics/analytics.db "SELECT (SELECT count(*) FROM repos), (SELECT count(*) FROM traffic_daily), (SELECT count(*) FROM window_snapshots), (SELECT count(*) FROM referrer_snapshots), (SELECT count(*) FROM path_snapshots);"
+```
+
+On Neon, paste the same `SELECT` into the SQL Editor. All five numbers must match exactly before you move on.
+
 ### 5. Enable Deployment Protection — before the domain, not after
 
 This step is not optional hardening. **It is the entire security boundary for this deployment.** The app has no authentication of its own — not for the dashboard, and not for its state-changing API routes either (see below) — so whatever Vercel puts in front of it is the only thing standing between a stranger who finds the URL and every tracked repository's name and full traffic history, private repositories included.
