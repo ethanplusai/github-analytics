@@ -189,18 +189,33 @@ export class Poller {
   // before the platform's function limit. Repos not reached this run are
   // simply the stalest next run — and because GitHub re-reports 14 days on
   // every call, nothing is lost by deferring one.
+  //
+  // Records a poll run the same way pollAll() does — otherwise a cron-only
+  // deployment never has a persisted run to fall back on, and /api/status
+  // reports "Updated never" forever even while polling is working fine.
+  // The recording happens in a finally so it still lands if pollRepo throws.
   async pollDue({ limit = 25, deadlineMs = 45000 } = {}) {
     const startedMs = Date.now();
     const repos = await this.store.listDueRepos(limit);
+    const startedAt = this.now().toISOString();
+    const runId = await this.store.startPollRun(startedAt);
+
     let ok = 0;
     let failed = 0;
     let started = 0;
 
-    for (const repo of repos) {
-      if (Date.now() - startedMs > deadlineMs) break;
-      started += 1;
-      const result = await this.pollRepo(repo);
-      if (result.ok) ok += 1; else failed += 1;
+    try {
+      for (const repo of repos) {
+        if (Date.now() - startedMs > deadlineMs) break;
+        started += 1;
+        const result = await this.pollRepo(repo);
+        if (result.ok) ok += 1; else failed += 1;
+      }
+    } finally {
+      const finishedAt = this.now().toISOString();
+      await this.store.finishPollRun(runId, { total: started, ok, failed, at: finishedAt });
+      this.state.lastRunAt = finishedAt;
+      this.state.lastResult = { total: started, ok, failed, startedAt, finishedAt };
     }
 
     return { total: started, ok, failed, remaining: repos.length - started };

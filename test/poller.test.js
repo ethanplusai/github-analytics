@@ -290,3 +290,51 @@ test('pollDue takes the stalest repos first', async () => {
   await poller.pollDue({ limit: 1, deadlineMs: 60000 });
   assert.deepEqual(polled, ['a/stale']);
 });
+
+// Regression: pollDue() previously never recorded a poll run, so a
+// cron-only deployment (no interval timer) would report "Updated never"
+// forever even while polling was working perfectly — store.lastPollRun()
+// stayed null across restarts because nothing but pollAll() ever wrote one.
+test('pollDue records a poll run whose totals match its return value', async () => {
+  const { store, poller } = setup();
+  for (const name of ['a/1', 'a/2', 'a/3']) {
+    await store.upsertRepo({ fullName: name, owner: 'a', name: name.slice(2) }, '2026-01-01T00:00:00Z');
+  }
+  let n = 0;
+  poller.pollRepo = async (repo) => {
+    n += 1;
+    return n === 2 ? { fullName: repo.fullName, ok: false } : { fullName: repo.fullName, ok: true };
+  };
+
+  const result = await poller.pollDue({ limit: 10, deadlineMs: 60000 });
+  assert.deepEqual(result, { total: 3, ok: 2, failed: 1, remaining: 0 });
+
+  const persisted = await store.lastPollRun();
+  assert.ok(persisted, 'a poll run was persisted');
+  assert.equal(persisted.total, result.total);
+  assert.equal(persisted.ok, result.ok);
+  assert.equal(persisted.failed, result.failed);
+  assert.ok(persisted.startedAt, 'startedAt was recorded');
+  assert.ok(persisted.finishedAt, 'finishedAt was recorded');
+
+  // The in-memory state matches the persisted path too, so a process that
+  // never restarts also sees the run reflected immediately.
+  const state = poller.getState();
+  assert.equal(state.lastRunAt, persisted.finishedAt);
+  assert.deepEqual(state.lastResult, {
+    total: result.total, ok: result.ok, failed: result.failed,
+    startedAt: persisted.startedAt, finishedAt: persisted.finishedAt,
+  });
+});
+
+test('pollDue still records a poll run when a repo poll throws', async () => {
+  const { store, poller } = setup();
+  await store.upsertRepo({ fullName: 'a/1', owner: 'a', name: '1' }, '2026-01-01T00:00:00Z');
+  poller.pollRepo = async () => { throw new Error('boom'); };
+
+  await assert.rejects(() => poller.pollDue({ limit: 10, deadlineMs: 60000 }), /boom/);
+
+  const persisted = await store.lastPollRun();
+  assert.ok(persisted, 'a poll run was persisted even though pollRepo threw');
+  assert.ok(persisted.finishedAt, 'finishedAt was recorded despite the throw');
+});
