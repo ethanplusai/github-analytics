@@ -4,11 +4,11 @@ Running this locally needs nothing but `npm start`. This document covers the oth
 
 The self-hosted shape is always the same — the app listens on loopback, a reverse proxy terminates TLS and forwards to it, and you tell the app to accept the proxied `Host`. Vercel's shape is different: no proxy, no loopback, a Postgres database instead of the SQLite file, and Vercel Cron calling the poll endpoint instead of the app's own timer. It has its own section, [below](#deploying-to-vercel-with-neon-and-cron).
 
-## Before you start: this app has no user authentication
+## Before you start: authentication is optional locally, and required for most public deployments
 
-That is deliberate and it is in the design — it's a personal tool holding one person's GitHub token and the traffic data derived from it. It has no login, no accounts, and no per-user anything.
+The app has a built-in login: set `GHA_PASSWORD` and every route except `GET /api/poll` sits behind a signed session cookie, issued at `/login`. It is a single shared passphrase, not accounts — no per-user anything. Unset, there is no login at all, which is the right default for a personal tool on your own machine holding one person's GitHub token and the traffic data derived from it.
 
-**So whatever puts this on the internet has to be the thing that keeps other people out — the app will not do it for you.** Behind a reverse proxy, that means basic auth, an identity-aware proxy, a VPN, or an IP allowlist; both proxy examples below include basic auth for that reason. On Vercel it means Deployment Protection, covered in its own section with no exceptions and no shortcuts. Publishing this without one puts your private repositories' traffic on the open web.
+**Once this is reachable from outside your own machine, something has to keep other people out, or `GHA_PASSWORD` has to.** Behind a reverse proxy, that something can be basic auth, an identity-aware proxy, a VPN, or an IP allowlist instead of (or alongside) `GHA_PASSWORD`; both proxy examples below include basic auth for that reason. On Vercel, which boundary is available depends on the plan — see the [security section](#5-security-boundary-deployment-protection-and-gha_password) below. Publishing this with no boundary at all puts your private repositories' traffic on the open web.
 
 ## 1. Put the app somewhere and give it a data directory
 
@@ -175,11 +175,11 @@ If you get `403 forbidden_host`, `GHA_ALLOWED_HOSTS` doesn't match the hostname 
 
 ## Deploying to Vercel, with Neon and Cron
 
-This is the other way to keep it running: no server to patch, a managed Postgres database instead of the SQLite file, and Vercel Cron calling the poll endpoint instead of the app's own timer. Do these steps in the order given — step 5 says why that matters.
+This is the other way to keep it running: no server to patch, a managed Postgres database instead of the SQLite file, and Vercel Cron calling the poll endpoint instead of the app's own timer. Set `GHA_PASSWORD` before the first deployment — [step 5](#5-security-boundary-deployment-protection-and-gha_password) says why.
 
 ### 1. Create the project
 
-Import the repository into Vercel from GitHub as a new project. Nothing needs to be configured beyond that; it's a plain Node HTTP server and Vercel's Node runtime serves it as-is.
+Import the repository into Vercel from GitHub as a new project. Nothing needs to be configured by hand beyond that; it's a plain Node HTTP server and Vercel's Node runtime serves it as-is, and `vercel.json` already carries the settings this deployment needs (function duration, the cron schedule, and — see step 5 — an `outputDirectory` override that keeps `public/` from being served as static assets ahead of the app's own login gate).
 
 ### 2. Add Neon and confirm the connection string
 
@@ -192,6 +192,7 @@ From the project's Storage tab, add **Neon** from the Vercel Marketplace and cre
 | `GITHUB_TOKEN` | A **fine-grained** personal access token with **Administration: Read-only** and **Metadata: Read-only** on the repositories to track, added to Vercel and marked **Sensitive**. This is a token you generate for this purpose — it is not what `gh auth token` prints on your own machine, and it is not a classic token scoped to `repo`. Those two read-only fine-grained permissions are everything the traffic endpoints need. |
 | `CRON_SECRET` | 32 or more random characters, e.g. `openssl rand -hex 32`. Vercel Cron sends this back as `Authorization: Bearer $CRON_SECRET` automatically; see below. |
 | `GHA_ALLOWED_HOSTS` | The custom domain **and** the project's own `.vercel.app` domain, comma-separated — for example `github.ethanplus.ai,github-analytics-xxxx.vercel.app`. |
+| `GHA_PASSWORD` | A password-manager-generated value, 30 or more characters, marked **Sensitive**. See the [security section](#5-security-boundary-deployment-protection-and-gha_password) below for why, and when this can be skipped. The app refuses to start serverless without it unless `GHA_ALLOW_PUBLIC=1` is also set. |
 
 **`GHA_ALLOWED_HOSTS` must list both hosts, not just the custom domain.** Vercel Cron does not call your custom domain — it calls the project's production deployment URL, the `.vercel.app` one. Leave that host out of the allowlist and the site looks perfectly healthy on the custom domain while every single cron invocation fails with `403 forbidden_host`, invisibly — the dashboard shows nothing different. The only way to notice is the function log for the run, under the project's Cron Jobs tab. Find the exact `.vercel.app` hostname on the project's Deployments tab.
 
@@ -220,41 +221,59 @@ sqlite3 ~/.github-analytics/analytics.db "SELECT (SELECT count(*) FROM repos), (
 
 On Neon, paste the same `SELECT` into the SQL Editor. All five numbers must match exactly before you move on.
 
-### 5. Enable Deployment Protection — before the domain, not after
+### 5. Security boundary: Deployment Protection and `GHA_PASSWORD`
 
-This step is not optional hardening. **It is the entire security boundary for this deployment.** The app has no authentication of its own — not for the dashboard, and not for its state-changing API routes either (see below) — so whatever Vercel puts in front of it is the only thing standing between a stranger who finds the URL and every tracked repository's name and full traffic history, private repositories included.
+Which boundary protects this deployment depends on the Vercel plan — the two are not interchangeable, and one of them is not available on Hobby at all.
 
-Go to Project Settings → Deployment Protection and set:
+**On Pro or Enterprise**, Vercel's Deployment Protection is the recommended boundary, and `GHA_PASSWORD` may be omitted. Go to Project Settings → Deployment Protection and set:
 
 - Scope: **All Deployments**
 - Method: **Vercel Authentication**
 
-Not Standard Protection: Standard Protection deliberately leaves production domains public and only gates preview deployments, which is the wrong shape here because the production domain *is* the whole dashboard. Confirm it worked by opening the deployment's `.vercel.app` URL in a private browser window — it must show a Vercel login page, never the dashboard.
+Not Standard Protection: Standard Protection deliberately leaves the production domain public and only gates preview deployments, which is the wrong shape here because the production domain *is* the whole dashboard. "All Deployments" is a Pro-and-above scope. Confirm it worked by opening the deployment's `.vercel.app` URL in a private browser window — it must show a Vercel login page, never the dashboard.
 
-**Do this before the next step, not after.** Attaching the custom domain first and enabling protection second leaves a window, however short, where the domain is live and world-readable. That window cannot be closed after the fact — the only fix is not opening it, by doing these two steps in this order.
+**On Hobby, that option does not exist.** Standard Protection is the only scope Hobby offers, and it deliberately leaves the production domain public — there is no way to put this app's production URL behind Vercel Authentication on Hobby. `GHA_PASSWORD` is therefore **required**, and the app enforces that itself at startup rather than trusting the operator to remember:
+
+- Serverless (`VERCEL` set) with no `GHA_PASSWORD` and no `GHA_ALLOW_PUBLIC=1`: the app refuses to start. It never comes up unprotected.
+- `GHA_PASSWORD` set but its trimmed length under 20 characters: the app also refuses to start. That floor is a refusal to run with almost nothing — see below for the actual target.
+
+`GHA_ALLOW_PUBLIC=1` is the deliberate override for a deployment with nothing private to protect. Set it and the app starts with no password at all — after which every tracked repository's name and its full traffic history, private repositories included, are readable by anyone who finds the URL. Set it only if that is genuinely what you want.
+
+**There is no rate limiting on login attempts, and that is deliberate.** Serverless instances share no memory, so a per-process attempt counter would reset on every cold start and defend nothing; a database-backed one would add a write on every failed request, indefinitely, against a risk passphrase entropy already closes off more cheaply. So passphrase strength is the real control:
+
+- The session key is derived from `GHA_PASSWORD` with `scrypt`, at roughly 20ms per guess. Against the realistic threat — an attacker who has captured a session cookie and is cracking the passphrase that signed it offline, on hardware of their choosing — that buys roughly 2-3 orders of magnitude: on the order of 10^8 guesses/day on commodity hardware, versus 10^9-10^10 guesses *per second* under the naive HMAC-of-the-plain-passphrase design this replaced (no KDF at all).
+- Failed logins made over the network also carry a fixed ~400ms delay, which matters against someone guessing through the login form itself.
+
+Use a password-manager-generated value of **30 or more characters**, not a memorable phrase. 20 characters is where the app stops refusing to start, not what it recommends.
+
+**With `GHA_PASSWORD` set, every route except `GET /api/poll` is behind the session gate** — the dashboard, `/app.js`, `/styles.css`, and every `/api/*` route, state-changing or not, all redirect (or return `401`) for an unauthenticated request. `GET /api/poll` is exempt because Vercel Cron calls it with no session cookie; it authenticates instead with `Authorization: Bearer $CRON_SECRET`, which `src/api.js` checks on its own. The enumeration in the next section — routes with no credential at all — applies only when authentication is disabled: `GHA_PASSWORD` unset (Hobby, with `GHA_ALLOW_PUBLIC=1`), or Pro/Enterprise relying on Deployment Protection with `GHA_PASSWORD` omitted.
+
+**Set `GHA_PASSWORD` before the first deployment, not after.** The old advice for Deployment Protection — "enable it before attaching the domain" — existed because there was a window, between deploying and remembering to flip a dashboard toggle, where the domain, once attached, was live and world-readable. `GHA_PASSWORD` removes that window by construction: the startup check means a serverless deployment with no password and no `GHA_ALLOW_PUBLIC=1` does not run at all, so there's no state where it's up and unprotected. Set the variable in Vercel's Environment Variables before the first deploy and this is automatic.
+
+**Verify it after deploying.** In a private browser window, request the production URL and confirm it redirects to `/login` rather than serving the dashboard shell. Then request `/app.js` directly and confirm the response is not JavaScript — an unauthenticated visitor should not be able to fetch it. If either check fails, static assets are being served from Vercel's CDN ahead of the function, which means `public/` is being treated as this project's static output directory and requests for those paths never reach the login gate at all. `vercel.json`'s `outputDirectory` is deliberately pointed away from `public` to prevent exactly this; if a deployment still serves `/app.js` (or the dashboard shell at `/`) to an unauthenticated request, that override isn't taking effect on that deployment and needs investigating before the deployment is safe to use for anything private.
 
 ### 6. Attach the domain
 
-Add the custom domain (for example `github.ethanplus.ai`) to the project and complete the DNS record Vercel gives you. Confirm the custom domain also shows the Vercel login page — the same check as step 5, now against the real hostname — before considering this done.
+Add the custom domain (for example `github.ethanplus.ai`) to the project and complete the DNS record Vercel gives you. Repeat the verification from step 5 against the real hostname before considering this done: on Hobby, the custom domain must redirect to `/login`; on Pro/Enterprise with Deployment Protection enabled, it must show the Vercel login page instead.
 
-### Why Deployment Protection carries the whole load
+### Why the `Host` check isn't the security boundary
 
-It's worth being specific about what does and doesn't guard this app on its own, because the `Host` check documented earlier in this file is easy to mistake for a security boundary. It isn't one here. That check exists to stop a webpage you're browsing from driving a *loopback* server; on Vercel, `GHA_ALLOWED_HOSTS` must contain the production domain for the app to work at all, and once it does, any direct request that simply sets that `Host` header passes the guard from anywhere on the internet. The `Origin` check alongside it only rejects browser-driven cross-site requests — a plain script never sends a same-origin `Origin` header and is never touched by it.
+It's worth being specific about what does and doesn't guard this app on its own, because the `Host` check documented earlier in this file is easy to mistake for one. It isn't. That check exists to stop a webpage you're browsing from driving a *loopback* server; on Vercel, `GHA_ALLOWED_HOSTS` must contain the production domain for the app to work at all, and once it does, any direct request that simply sets that `Host` header passes the guard from anywhere on the internet. The `Origin` check alongside it only rejects browser-driven cross-site requests — a plain script never sends a same-origin `Origin` header and is never touched by it.
 
-Concretely, with Deployment Protection off, all of the following need no credentials at all:
+Concretely, **with authentication disabled** — `GHA_PASSWORD` unset (on Hobby, only reachable with `GHA_ALLOW_PUBLIC=1`; on Pro/Enterprise, relying on Deployment Protection alone) — all of the following need no credentials at all:
 
 - `POST /api/poll` — triggers a full poll of every tracked repository.
 - `POST /api/repos` — adds a repository to track.
 - `DELETE /api/repos/:owner/:repo` — untracks one.
 - `POST /api/seed` — discovers every repository the token can read traffic for, adds all of them, and then triggers a full poll, in one call.
 
-`GET /api/poll` is the one route with its own credential: it requires `Authorization: Bearer $CRON_SECRET`, because that's the request Vercel Cron makes. `CRON_SECRET` protects that single route and nothing else — it was never meant to be, and cannot be, the deployment's security boundary. Deployment Protection is.
+`GET /api/poll` is the one route with its own credential in every configuration: it requires `Authorization: Bearer $CRON_SECRET`, because that's the request Vercel Cron makes. `CRON_SECRET` protects that single route and nothing else — it was never meant to be, and cannot be, the deployment's whole security boundary.
 
-One more route is worth naming even though it doesn't change anything stored: `GET /api/available-repos` is also unauthenticated and calls GitHub's API directly (list every repo the token can see), rather than the database. It changes no state, but without Deployment Protection it lets anyone spend calls against the token's GitHub API rate limit — bounded somewhat by a 5-minute in-memory cache, but still free to trigger from outside.
+One more route is worth naming even though it doesn't change anything stored: `GET /api/available-repos` also calls GitHub's API directly (list every repo the token can see) rather than the database. It changes no state, but with authentication disabled it lets anyone spend calls against the token's GitHub API rate limit — bounded somewhat by a 5-minute in-memory cache, but still free to trigger from outside.
 
 ### A note on the cron schedule and plan
 
-`vercel.json` schedules `GET /api/poll` every 6 hours (`0 */6 * * *`). Sub-daily cron schedules require a Vercel Pro plan. On the Hobby plan, this expression fails at deploy time, and the schedule would have to become `0 6 * * *` — once a day — instead. That is not actually a limitation for this project: GitHub's traffic API re-reports the entire last 14 days on every call, so a once-a-day poll loses no history a 6-hourly one would have caught. It's simply less current during the day.
+`vercel.json` schedules `GET /api/poll` once a day (`0 6 * * *`) — the most frequent schedule Hobby allows; Vercel rejects any sub-daily cron expression at deploy time. That is not actually a limitation for this project: GitHub's traffic API re-reports the entire last 14 days on every call, so a once-a-day poll loses no history a more frequent one would have caught. It's simply less current during the day. On Pro or Enterprise, where sub-daily cron is allowed, something like `0 */6 * * *` (every 6 hours) is a reasonable tightening if fresher data matters to you; the code has no opinion either way. `GHA_POLL_DEADLINE_MS` (`45000`) leaves 15 seconds of slack under the `maxDuration` ceiling `vercel.json` sets (`60` seconds, Hobby's cap) regardless of which schedule is in use — don't raise it above that.
 
 ## Backups (self-hosted / SQLite)
 

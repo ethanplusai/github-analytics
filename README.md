@@ -63,7 +63,9 @@ Everything has a working default. You shouldn't need any of these.
 | `POSTGRES_URL` | — | Postgres/Neon connection string. When set, traffic is stored there instead of SQLite (`DATABASE_URL` also works — either name is read) |
 | `GHA_POLL_MODE` | `interval`, or `cron` when `VERCEL` is set | `interval` runs the built-in timer; `cron` disables it and waits for `GET /api/poll` to be called from outside instead |
 | `CRON_SECRET` | — | Bearer token required by `GET /api/poll`. With none set, that endpoint refuses every request rather than run unauthenticated |
-| `GHA_POLL_DEADLINE_MS` | `45000` | How long `GET /api/poll` may run before it stops starting new repos and returns. Must stay below the deployment's function `maxDuration` (`vercel.json` sets that to `300` seconds) — otherwise the platform kills the invocation first and the poll lock isn't released until its TTL expires |
+| `GHA_POLL_DEADLINE_MS` | `45000` | How long `GET /api/poll` may run before it stops starting new repos and returns. Must stay below the deployment's function `maxDuration` (`vercel.json` sets that to `60` seconds on Vercel's Hobby plan) — otherwise the platform kills the invocation first and the poll lock isn't released until its TTL expires |
+| `GHA_PASSWORD` | — | Passphrase for the built-in login. When set, every route except `GET /api/poll` requires a signed session cookie, issued at `/login`. On a serverless deployment the app refuses to start with this unset unless `GHA_ALLOW_PUBLIC=1` is also set, and refuses a passphrase whose trimmed length is under 20 characters. Use a password manager's generated value, not a memorable phrase — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| `GHA_ALLOW_PUBLIC` | `0` | Deliberate override that lets a serverless deployment start with no `GHA_PASSWORD`. Doing so puts every tracked repository's name and full traffic history on the open web for anyone who finds the URL |
 
 ## Your data
 
@@ -87,14 +89,16 @@ The server listens on loopback only and refuses requests whose `Host` header isn
 
 ## Running it on the internet
 
-This app has no login of its own — no accounts, no passwords, no per-user anything. Anyone who can reach it can see every tracked repository's name and its traffic, private repos included. Putting it anywhere reachable from outside your own machine means something else has to keep other people out: a reverse proxy with basic auth for a self-hosted subdomain, or Vercel's Deployment Protection for a Vercel deployment.
+The app has an optional login (`GHA_PASSWORD`): a single shared passphrase, a signed session cookie, no accounts and no per-user anything. It's off by default for local use. Anyone who can reach an instance with it off can see every tracked repository's name and its traffic, private repos included, so it is **required** for any public deployment that holds private repositories.
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for both.
+Self-hosted, a reverse proxy with basic auth (or an identity-aware proxy, a VPN, or an IP allowlist) can stand in for it. On Vercel's Hobby plan, `GHA_PASSWORD` is the only option — production domains can't be put behind Vercel's own protection there — and the app enforces it: it refuses to start serverless without either `GHA_PASSWORD` or a deliberate `GHA_ALLOW_PUBLIC=1`.
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full picture, including what to check after deploying.
 
 ## Development
 
 ```bash
-npm test     # 180 passing, 1 skipped, no network access required
+npm test     # 236 passing, 1 skipped, no network access required
 npm run dev  # restarts on change
 ```
 
