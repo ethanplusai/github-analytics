@@ -21,6 +21,11 @@ export function normaliseRepo(r) {
     htmlUrl: r.html_url ?? null,
     pushedAt: r.pushed_at ?? null,
     canReadTraffic: r.permissions?.push === true,
+    stars: r.stargazers_count ?? 0,
+    forks: r.forks_count ?? 0,
+    // subscribers_count, NOT watchers_count — the latter is a legacy alias for
+    // the star count and would silently duplicate it.
+    watchers: r.subscribers_count ?? null,
   };
 }
 

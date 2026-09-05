@@ -256,7 +256,29 @@ test('normaliseRepo maps the API shape and marks traffic access', () => {
     fullName: 'octo/hello', owner: 'octo', name: 'hello', private: true,
     description: 'hi', htmlUrl: 'https://github.com/octo/hello',
     pushedAt: '2026-09-01T00:00:00Z', canReadTraffic: false,
+    stars: 0, forks: 0, watchers: null,
   });
+});
+
+test('normaliseRepo reads the real watcher count, not the stars alias', () => {
+  // GitHub's `watchers_count` is a legacy alias for the star count. The actual
+  // number of watchers is `subscribers_count`. Reading the wrong one plots
+  // stars twice under two different labels.
+  const r = normaliseRepo({
+    full_name: 'a/b', name: 'b', owner: { login: 'a' },
+    stargazers_count: 714, forks_count: 240,
+    watchers_count: 714, subscribers_count: 11,
+  });
+  assert.equal(r.stars, 714);
+  assert.equal(r.forks, 240);
+  assert.equal(r.watchers, 11);
+});
+
+test('normaliseRepo tolerates missing count fields', () => {
+  const r = normaliseRepo({ full_name: 'a/b', name: 'b', owner: { login: 'a' } });
+  assert.equal(r.stars, 0);
+  assert.equal(r.forks, 0);
+  assert.equal(r.watchers, null);
 });
 
 test('rejects a malformed full name before making a request', async () => {

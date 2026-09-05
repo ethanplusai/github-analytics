@@ -1,4 +1,5 @@
 import { todayUtc } from './db.js';
+import { normaliseRepo } from './github.js';
 
 export const silentLogger = { info() {}, warn() {}, error() {} };
 
@@ -40,11 +41,14 @@ export class Poller {
     const day = todayUtc(now);
     const iso = now.toISOString();
     try {
-      const [clones, views, referrers, paths] = await Promise.all([
+      const [clones, views, referrers, paths, meta] = await Promise.all([
         this.client.getClones(repo.fullName),
         this.client.getViews(repo.fullName),
         this.client.getReferrers(repo.fullName),
         this.client.getPaths(repo.fullName),
+        // Additive: traffic is the product, and a failure here must not cost
+        // us the traffic we did collect.
+        this.client.getRepo(repo.fullName).then(normaliseRepo).catch(() => null),
       ]);
 
       await this.store.ingestTrafficSeries(repo.id, 'clones', clones.points, iso);
@@ -53,6 +57,11 @@ export class Poller {
       await this.store.ingestWindowSnapshot(repo.id, day, 'views', { count: views.count, uniques: views.uniques });
       await this.store.ingestReferrers(repo.id, day, referrers);
       await this.store.ingestPaths(repo.id, day, paths);
+      if (meta) {
+        await this.store.recordRepoMetrics(
+          repo.id, day, { stars: meta.stars, forks: meta.forks, watchers: meta.watchers }, iso,
+        );
+      }
       await this.store.markPolled(repo.id, { at: iso });
 
       return { fullName: repo.fullName, ok: true, error: null };

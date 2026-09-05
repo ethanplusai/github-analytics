@@ -12,6 +12,10 @@ function fakeClient(overrides = {}) {
     getViews: async () => ({ count: 0, uniques: 0, points: [] }),
     getReferrers: async () => [],
     getPaths: async () => [],
+    getRepo: async () => ({
+      full_name: 'octo/hello', name: 'hello', owner: { login: 'octo' },
+      stargazers_count: 0, forks_count: 0, subscribers_count: 0,
+    }),
     ...overrides,
   };
 }
@@ -78,6 +82,37 @@ test('pollRepo records a readable error and does not throw', async () => {
   assert.equal(result.ok, false);
   assert.match(result.error, /push access/);
   assert.match((await store.getRepo('octo/nope')).lastError, /push access/);
+});
+
+test('pollRepo records the repo metrics for the day', async () => {
+  const { store, poller } = setup({
+    getRepo: async () => ({
+      full_name: 'octo/hello', name: 'hello', owner: { login: 'octo' },
+      stargazers_count: 42, forks_count: 7, subscribers_count: 3,
+      permissions: { push: true },
+    }),
+  });
+  await store.upsertRepo({ fullName: 'octo/hello', owner: 'octo', name: 'hello' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('octo/hello');
+  await poller.pollRepo(repo);
+  assert.deepEqual(await store.latestMetrics(repo.id), {
+    day: '2026-09-04', stars: 42, forks: 7, watchers: 3,
+  });
+});
+
+test('a failing metrics call does not lose the traffic that was collected', async () => {
+  // The metrics call is an addition; traffic is the product. If GitHub fails
+  // that one endpoint, the poll must still record what it did get.
+  const { store, poller } = setup({
+    getRepo: async () => { throw new Error('boom'); },
+    getViews: async () => ({ count: 5, uniques: 2, points: [{ timestamp: '2026-09-03T00:00:00Z', count: 5, uniques: 2 }] }),
+  });
+  await store.upsertRepo({ fullName: 'octo/hello', owner: 'octo', name: 'hello' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('octo/hello');
+  const result = await poller.pollRepo(repo);
+  assert.equal(result.ok, true);
+  assert.equal((await store.dailySeries(repo.id, 'views', null)).length, 1);
+  assert.equal(await store.latestMetrics(repo.id), null);
 });
 
 test('pollAll keeps going when one repo fails and reports a tally', async () => {
