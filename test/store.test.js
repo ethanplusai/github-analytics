@@ -421,6 +421,29 @@ test('metricsSeries honours sinceDay', async () => {
   assert.deepEqual((await store.metricsSeries(repo.id, '2026-01-03')).map((r) => r.day), ['2026-01-05']);
 });
 
+test('watchersRecordedFrom skips backfilled days and ignores any range', async () => {
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  // Backfilled history: stars and forks, but no watcher figure exists for these.
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 1, forks: 0, watchers: null }, '2026-01-01T00:00:00Z');
+  await store.recordRepoMetrics(repo.id, '2026-01-02', { stars: 2, forks: 0, watchers: null }, '2026-01-02T00:00:00Z');
+  // The first real poll — this is the day watchers genuinely begin.
+  await store.recordRepoMetrics(repo.id, '2026-01-03', { stars: 3, forks: 0, watchers: 6 }, '2026-01-03T00:00:00Z');
+  await store.recordRepoMetrics(repo.id, '2026-01-04', { stars: 4, forks: 0, watchers: 7 }, '2026-01-04T00:00:00Z');
+  assert.equal(await store.watchersRecordedFrom(repo.id), '2026-01-03');
+});
+
+test('watchersRecordedFrom is null when only backfilled days exist', async () => {
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 1, forks: 0, watchers: null }, '2026-01-01T00:00:00Z');
+  // MIN() over no matching rows still returns a row, with a NULL day — the
+  // method must turn that into null rather than leaking an undefined.
+  assert.equal(await store.watchersRecordedFrom(repo.id), null);
+});
+
 test('a null watcher count survives the round trip as null, not zero', async () => {
   const store = freshStore();
   await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');

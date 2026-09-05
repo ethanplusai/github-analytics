@@ -233,6 +233,20 @@ export class Store {
     return rows.map(plain);
   }
 
+  // The first day any watcher figure was ever recorded, deliberately independent
+  // of whatever range the caller is looking at. The UI states this as a fact
+  // about what GitHub publishes ("no earlier watcher history"), so it must not
+  // shift when the reader changes the range — a range-relative value would make
+  // the page assert a falsehood about data this app is itself holding.
+  async watchersRecordedFrom(repoId) {
+    const rows = await this.driver.query(
+      'SELECT MIN(day) AS day FROM repo_metrics_daily WHERE repo_id = ? AND watchers IS NOT NULL',
+      [repoId],
+    );
+    // MIN over zero matching rows still returns one row, with a NULL day.
+    return rows[0]?.day ?? null;
+  }
+
   async latestMetrics(repoId) {
     const rows = await this.driver.query(`
       SELECT day, stars, forks, watchers FROM repo_metrics_daily

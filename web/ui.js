@@ -176,7 +176,7 @@ export function formatCloneRatio(ratio) {
   if (ratio === null || ratio === undefined) return null;
   const value = ratio.toFixed(1);
   if (ratio === 1) {
-    return `${value} clones per unique cloner — no repeat cloning in this range.`;
+    return `${value} clones per unique-cloner-day — no repeat cloning in this range.`;
   }
-  return `${value} clones per unique cloner — one actor cloning repeatedly, typically CI or a deploy system.`;
+  return `${value} clones per unique-cloner-day — one actor cloning repeatedly, typically CI or a deploy system.`;
 }

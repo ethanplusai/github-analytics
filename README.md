@@ -39,6 +39,16 @@ Two things the dashboard says out loud, because the numbers would otherwise be e
   nothing equivalent for watchers, so that series begins the day the poller
   first recorded it — the dashboard says so rather than drawing a flat zero
   line through months it cannot account for.
+- **Clones and views count different things, and the dashboard shows the ratio
+  rather than guessing.** A clone is a machine operation; a view is a person
+  loading a page. So a repository with active CI or a deploy hook can honestly
+  show hundreds of clones against almost no views. Each repo displays
+  clones per unique-cloner-day, and a high number means one actor cloning
+  repeatedly — typically CI or a deployment system. The figure is the plain
+  arithmetic and nothing more: no repository is flagged, classified, or filtered
+  out, because GitHub never says who cloned. Note the denominator sums GitHub's
+  daily unique-cloner counts, so someone cloning on three days counts three
+  times — it is cloner-days, not a headcount of distinct people.
 - **Referrers and paths are a rolling 14-day total**, not a lifetime total. They're shown as a current snapshot, alongside the highest value ever recorded and the date each entry first appeared. Summing those snapshots would multiply-count badly, so it isn't done.
 
 A stored **traffic** figure is only ever raised, never lowered. GitHub's number for the current day grows as the day goes on, and a truncated or failed poll would otherwise erase a higher value already recorded. Stars, forks and watchers are the deliberate exception: they can fall — someone unstars — so the newest reading for a day replaces the previous one outright.
@@ -130,7 +140,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full picture, including wha
 ## Development
 
 ```bash
-npm test     # 292 passing, 1 skipped, no network access required
+npm test     # 295 passing, 1 skipped, no network access required
 npm run dev  # restarts on change
 ```
 

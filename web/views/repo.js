@@ -312,7 +312,9 @@ function buildCharts(data, chartHandles) {
     emptyMessage: 'No star or fork history recorded yet.',
   }));
 
-  const latestWatchers = [...data.metrics.watchers].reverse().find((w) => w != null);
+  // The newest watcher figure on record, not the newest inside the selected
+  // range — the caveat beneath it is a claim about all recorded history.
+  const { latestWatchers } = data.metrics;
   if (latestWatchers != null) {
     const watcherStats = el('div', { className: 'stats' });
     const tile = buildStat('Watchers', latestWatchers);

@@ -100,15 +100,20 @@ function densifySummary(summary, sparkSinceDay, now) {
 // already consume, mirroring how `series` is built in denseSeries. Unlike
 // traffic, metrics rows are not zero-filled: a missing day means no poll or
 // backfill ever ran for it, and there's no honest zero to fill it with.
-function metricsFrom(rows) {
+// `watchersFrom` and `latestWatchers` are passed in rather than derived from
+// `rows`, because `rows` is limited to the selected range and both of these are
+// claims about ALL recorded history. Deriving them here would make the page say
+// "GitHub publishes no earlier watcher history" about a date that moves when the
+// reader switches range — false whenever the app holds watcher data older than
+// the window being viewed.
+function metricsFrom(rows, { watchersFrom, latestWatchers }) {
   return {
     days: rows.map((r) => r.day),
     stars: rows.map((r) => r.stars),
     forks: rows.map((r) => r.forks),
     watchers: rows.map((r) => r.watchers),
-    // The first day a watcher figure exists — everything before it is history
-    // GitHub does not publish, so the UI must say so rather than plot a zero.
-    watchersFrom: rows.find((r) => r.watchers != null)?.day ?? null,
+    watchersFrom,
+    latestWatchers,
   };
 }
 
@@ -276,7 +281,11 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
     const allTime = await store.totals(repo.id, null);
     const latestWindow = await store.latestWindow(repo.id);
     const series = await denseSeries(store, repo.id, sinceDay, now());
-    const metrics = metricsFrom(await store.metricsSeries(repo.id, sinceDay));
+    const latest = await store.latestMetrics(repo.id);
+    const metrics = metricsFrom(await store.metricsSeries(repo.id, sinceDay), {
+      watchersFrom: await store.watchersRecordedFrom(repo.id),
+      latestWatchers: latest?.watchers ?? null,
+    });
     const referrers = await store.latestReferrers(repo.id, 20);
     const paths = await store.latestPaths(repo.id, 20);
 

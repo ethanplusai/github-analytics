@@ -269,6 +269,27 @@ test('repo detail includes a metrics series and says where watchers begin', asyn
   });
 });
 
+test('watchersFrom is absolute, not relative to the selected range', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      // A watcher figure far outside the 30-day window the request will ask for.
+      await store.recordRepoMetrics(repo.id, '2026-01-05', { stars: 1, forks: 0, watchers: 4 }, '2026-01-05T00:00:00Z');
+      await store.recordRepoMetrics(repo.id, '2026-09-03', { stars: 9, forks: 1, watchers: 7 }, '2026-09-03T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=30`)).json();
+    // The plotted series is correctly limited to the range...
+    assert.equal(body.metrics.days.includes('2026-01-05'), false);
+    // ...but "GitHub publishes no earlier watcher history" is a claim about ALL
+    // recorded history. Deriving it from the range made the page assert that
+    // falsehood about data this app was itself holding.
+    assert.equal(body.metrics.watchersFrom, '2026-01-05');
+    // Likewise the headline figure is the newest on record, not newest-in-range.
+    assert.equal(body.metrics.latestWatchers, 7);
+  });
+});
+
 test('watchersFrom is null when no watcher figure has ever been recorded', async () => {
   await withApi({
     storeSetup: async (store) => {

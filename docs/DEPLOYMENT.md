@@ -322,7 +322,7 @@ is a reasonable interval if fresher data matters to you — sub-daily schedules 
 
 **The symptom is silent.** The Cron Jobs tab in the Vercel dashboard shows the job as configured and "running" on schedule; nothing about the dashboard suggests a problem. But no invocation shows up in the function logs for that route, `poll_runs` stays empty, and the data quietly goes stale forever. Hobby also caps cron at once a day (`0 6 * * *` being the most frequent schedule it accepts — sub-daily expressions are rejected at deploy time), which would have been a real limitation even if the request landed. Between those two, `vercel.json` in this repository carries no `crons` entry — a scheduled job that silently never runs is worse than no scheduled job, because it looks like polling is configured when it is not.
 
-**The fix on Hobby is `.github/workflows/poll.yml`.** It's a scheduled GitHub Actions workflow that calls `GET /api/poll` directly with `Authorization: Bearer $CRON_SECRET`, from outside Vercel entirely — nothing about Standard Protection affects a plain `curl` request to the production alias, which is confirmed reachable: `https://github-analytics-nu.vercel.app/api/poll` returns this app's own `{"error":{"code":"unauthorized","message":"This endpoint requires the cron secret."}}` JSON rather than a redirect, proving the host guard passes and only the bearer check refuses. This also upgrades the interval past Hobby's forced daily minimum, to every 6 hours — matching what the app's own built-in timer has always used.
+**The fix on Hobby is `.github/workflows/poll.yml`.** It's a scheduled GitHub Actions workflow that calls `GET /api/poll` directly with `Authorization: Bearer $CRON_SECRET`, from outside Vercel entirely — nothing about Standard Protection affects a plain `curl` request to the production alias, which is confirmed reachable: `https://github-analytics-nu.vercel.app/api/poll` returns this app's own `{"error":{"code":"unauthorized","message":"This endpoint requires the cron secret."}}` JSON rather than a redirect, proving the host guard passes and only the bearer check refuses. This also upgrades the interval past Hobby's forced daily minimum, to every 2 hours. That is deliberately more frequent than `GHA_POLL_INTERVAL_HOURS` (default 6), which governs only the app's own in-process timer and has no say in which repositories a workflow run picks up — `listDueRepos` orders stalest-first and takes `GHA_POLL_BATCH`, with no staleness filter. More runs simply means fresher figures for the current day.
 
 To enable it, set two things on the GitHub repository (not on Vercel — these are separate from the Vercel environment variables in step 3, though `CRON_SECRET`'s value should be the same in both places):
 
@@ -348,7 +348,7 @@ sqlite3 /var/lib/github-analytics/analytics.db \
   ".backup /var/backups/github-analytics-$(date +%F).db"
 ```
 
-That is safe to run while the service is up. A nightly cron or timer is enough; the data only changes every 6 hours.
+That is safe to run while the service is up. A nightly cron or timer is enough; the data only changes when a poll runs, every 2 hours.
 
 On Vercel there is no SQLite file to back up this way — the data lives in Neon, and Neon's own point-in-time restore and branching cover this instead. That's a Neon console concern, not something this project scripts.
 

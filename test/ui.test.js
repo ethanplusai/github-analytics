@@ -69,7 +69,7 @@ test('isDeliberateConfirm rejects a double-click but accepts a real second click
 
 test('formatCloneRatio explains a normal ratio without implying a headcount', () => {
   const sentence = formatCloneRatio(42.8);
-  assert.equal(sentence, '42.8 clones per unique cloner — one actor cloning repeatedly, typically CI or a deploy system.');
+  assert.equal(sentence, '42.8 clones per unique-cloner-day — one actor cloning repeatedly, typically CI or a deploy system.');
   for (const word of ['people', 'person', 'persons', 'individual', 'individuals', 'distinct user', 'distinct users']) {
     assert.equal(sentence.toLowerCase().includes(word), false, `must not say "${word}"`);
   }
@@ -77,7 +77,7 @@ test('formatCloneRatio explains a normal ratio without implying a headcount', ()
 
 test('formatCloneRatio at exactly 1 does not claim repeat cloning', () => {
   const sentence = formatCloneRatio(1);
-  assert.equal(sentence, '1.0 clones per unique cloner — no repeat cloning in this range.');
+  assert.equal(sentence, '1.0 clones per unique-cloner-day — no repeat cloning in this range.');
   assert.equal(sentence.includes('repeatedly'), false);
 });
 
