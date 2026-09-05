@@ -7,7 +7,6 @@ import { readFileSync } from 'node:fs';
 
 import { loadConfig } from './src/config.js';
 import { discoverToken } from './src/token.js';
-import { createSqliteDriver } from './src/db/sqlite.js';
 import { Store } from './src/store.js';
 import { GitHubClient } from './src/github.js';
 import { Poller } from './src/poller.js';
@@ -111,16 +110,24 @@ export function createShutdownHandler({ poller, server, store, exit = process.ex
   };
 }
 
+export async function createDriverFromConfig(config) {
+  if (config.postgresUrl) {
+    const { createPostgresDriver } = await import('./src/db/postgres.js');
+    return createPostgresDriver(config.postgresUrl);
+  }
+  const { createSqliteDriver } = await import('./src/db/sqlite.js');
+  return createSqliteDriver(config.dbPath);
+}
+
 export async function main() {
   const config = loadConfig();
-  config.allowedHosts = (process.env.GHA_ALLOWED_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
 
   const version = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8')).version;
 
   const { token, source } = await discoverToken();
   const tokenInfo = { token, source, login: null, error: null };
 
-  const store = new Store(createSqliteDriver(config.dbPath));
+  const store = new Store(await createDriverFromConfig(config));
   const client = token ? new GitHubClient({ token, baseUrl: config.apiBaseUrl }) : null;
   const poller = new Poller({ store, client, logger: console });
   poller.intervalHours = config.pollIntervalHours;
@@ -128,35 +135,50 @@ export async function main() {
   const { requestListener } = createApp({ config, tokenInfo, client, store, poller, version });
 
   const server = createServer(requestListener);
-  const boundPort = await listenWithFallback(server, config);
+  let boundPort;
+  if (config.serverless) {
+    boundPort = await new Promise((resolvePromise, reject) => {
+      server.once('error', reject);
+      server.listen(config.port, '0.0.0.0', () => resolvePromise(server.address().port));
+    });
+  } else {
+    boundPort = await listenWithFallback(server, config);
+  }
 
   const url = `http://${config.host}:${boundPort}`;
+  const dataLabel = config.postgresUrl ? 'neon postgres' : config.dbPath;
   const lines = [
     '  GitHub Analytics',
     `  → ${url}`,
   ];
   if (token) {
-    lines.push(`  token: ${source}   ·   data: ${config.dbPath}`);
+    lines.push(`  token: ${source}   ·   data: ${dataLabel}`);
     lines.push('  Collecting traffic in the background. Press Ctrl+C to stop.');
   } else {
     lines.push("  token: none found — run 'gh auth login' or set GITHUB_TOKEN, then restart");
   }
   console.log(lines.join('\n'));
 
-  if (config.autoOpen) openBrowser(url);
+  if (config.autoOpen && !config.serverless) openBrowser(url);
 
   client?.getViewer().then((u) => { tokenInfo.login = u.login; }).catch((err) => { tokenInfo.error = err.message; });
-  poller.bootstrap({ autoSeed: config.autoSeed }).catch((err) => console.error('[poll]', err.message));
-  poller.start(config.pollIntervalHours);
+  if (config.pollMode === 'cron') {
+    console.log('  polling: cron mode — waiting for GET /api/poll');
+  } else {
+    poller.bootstrap({ autoSeed: config.autoSeed }).catch((err) => console.error('[poll]', err.message));
+    poller.start(config.pollIntervalHours);
+  }
 
-  const shutdown = createShutdownHandler({ poller, server, store });
-  for (const sig of ['SIGINT', 'SIGTERM']) {
-    process.on(sig, shutdown);
+  if (!config.serverless) {
+    const shutdown = createShutdownHandler({ poller, server, store });
+    for (const sig of ['SIGINT', 'SIGTERM']) {
+      process.on(sig, shutdown);
+    }
   }
 }
 
 const invokedDirectly = process.argv[1] && /(^|[\\/])(server\.js|start\.js)$/.test(process.argv[1]);
-if (invokedDirectly) {
+if (invokedDirectly || process.env.VERCEL) {
   main().catch((err) => {
     console.error(`\n  GitHub Analytics could not start: ${err.message}\n`);
     process.exit(1);

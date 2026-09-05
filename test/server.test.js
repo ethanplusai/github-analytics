@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createApp, listenWithFallback, createShutdownHandler } from '../server.js';
+import { createApp, listenWithFallback, createShutdownHandler, createDriverFromConfig } from '../server.js';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
 import { Poller } from '../src/poller.js';
@@ -162,6 +162,15 @@ test('the manage panel module is served', async () => {
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type'), /javascript/);
   });
+});
+
+test('createDriverFromConfig picks sqlite when no postgresUrl is configured', async () => {
+  const driver = await createDriverFromConfig({ ...CONFIG, postgresUrl: null });
+  try {
+    assert.equal(driver.dialect, 'sqlite');
+  } finally {
+    await driver.close();
+  }
 });
 
 test('no HTML in the app declares a modal dialog', async () => {

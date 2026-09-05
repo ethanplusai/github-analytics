@@ -39,3 +39,21 @@ test('loadConfig ignores a non-numeric port and falls back to the default', () =
   assert.equal(loadConfig({ PORT: 'not-a-number' }).port, 4319);
   assert.equal(loadConfig({ GHA_POLL_INTERVAL_HOURS: 'x' }).pollIntervalHours, 6);
 });
+
+test('cloud mode is selected by POSTGRES_URL and VERCEL', () => {
+  const cfg = loadConfig({ POSTGRES_URL: 'postgres://x', VERCEL: '1', CRON_SECRET: 's',
+    GHA_ALLOWED_HOSTS: 'github.ethanplus.ai, gha.vercel.app' });
+  assert.equal(cfg.postgresUrl, 'postgres://x');
+  assert.equal(cfg.serverless, true);
+  assert.equal(cfg.pollMode, 'cron');
+  assert.equal(cfg.cronSecret, 's');
+  assert.deepEqual(cfg.allowedHosts, ['github.ethanplus.ai', 'gha.vercel.app']);
+});
+
+test('local mode is the default and keeps the interval poller', () => {
+  const cfg = loadConfig({});
+  assert.equal(cfg.postgresUrl, null);
+  assert.equal(cfg.serverless, false);
+  assert.equal(cfg.pollMode, 'interval');
+  assert.deepEqual(cfg.allowedHosts, []);
+});

@@ -27,5 +27,13 @@ export function loadConfig(env = process.env) {
     autoOpen: bool(env.GHA_OPEN, true),
     envToken: env.GITHUB_TOKEN || env.GH_TOKEN || null,
     apiBaseUrl: env.GHA_API_BASE_URL || 'https://api.github.com',
+    postgresUrl: env.POSTGRES_URL || env.DATABASE_URL || null,
+    serverless: Boolean(env.VERCEL),
+    // Cron mode when there is no long-lived process to hold a timer. An
+    // explicit GHA_POLL_MODE always wins, so the cloud shape can be exercised
+    // locally.
+    pollMode: env.GHA_POLL_MODE || (env.VERCEL ? 'cron' : 'interval'),
+    cronSecret: env.CRON_SECRET || null,
+    allowedHosts: (env.GHA_ALLOWED_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean),
   };
 }
