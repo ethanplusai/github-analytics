@@ -85,9 +85,14 @@ export function createApp({
         return;
       }
 
+      // Parsed once and reused everywhere below, so there is exactly one
+      // notion of "what path is this request for" in this handler — the raw
+      // req.url must never be re-tested separately (e.g. with
+      // startsWith('/api/')), or the two checks can drift apart.
+      const url = new URL(req.url, 'http://localhost');
+
       if (auth.enabled) {
         const secure = Boolean(config.serverless);
-        const url = new URL(req.url, 'http://localhost');
 
         if (url.pathname === '/login') {
           if (req.method === 'GET') {
@@ -145,7 +150,7 @@ export function createApp({
       }
 
       if (await api.handle(req, res)) return;
-      if (req.url.startsWith('/api/')) {
+      if (url.pathname.startsWith('/api/')) {
         sendError(res, 404, 'not_found', 'Unknown API route.');
         return;
       }
@@ -174,7 +179,11 @@ export function assertSafeToStart(config, auth) {
       + 'Set GHA_PASSWORD, or set GHA_ALLOW_PUBLIC=1 if you really intend a public dashboard.',
     );
   }
-  if (config.serverless && auth.enabled && config.password.length < 20) {
+  // Measured on the module's own notion of the passphrase (trimmed), not
+  // the raw env value — otherwise GHA_PASSWORD='abc' padded with 20 trailing
+  // spaces would satisfy a raw-length check while the effective secret
+  // stayed 3 characters. See src/auth.js's `effectiveLength`.
+  if (config.serverless && auth.enabled && auth.effectiveLength < 20) {
     throw new Error(
       'Refusing to start: GHA_PASSWORD is shorter than 20 characters. This is deliberate: '
       + 'serverless instances share no memory, so there is no throttle on login attempts, and '

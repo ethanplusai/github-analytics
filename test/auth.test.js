@@ -288,3 +288,12 @@ test('calling isAuthenticated(req) with no options behaves as { secure: false }'
   const req = { headers: { cookie: `gha_session=${value}` } };
   assert.equal(auth.isAuthenticated(req), true);
 });
+
+test('effectiveLength reflects the trimmed passphrase, not the raw env value', () => {
+  assert.equal(createAuth({ passphrase: 'abc' + ' '.repeat(20) }).effectiveLength, 3);
+  assert.equal(createAuth({ passphrase: ' '.repeat(20) + 'abc' }).effectiveLength, 3);
+  assert.equal(createAuth({ passphrase: '  abc  ' }).effectiveLength, 3);
+  assert.equal(createAuth({ passphrase: PASS }).effectiveLength, PASS.length);
+  assert.equal(createAuth({ passphrase: '   ' }).effectiveLength, 0);
+  assert.equal(createAuth({ passphrase: null }).effectiveLength, 0);
+});

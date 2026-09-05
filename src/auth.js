@@ -63,6 +63,16 @@ export function createAuth({ passphrase, sessionSecret = null, now = () => Date.
   return {
     enabled,
 
+    // The length of the passphrase actually in effect after normalisation
+    // (trimmed, `null`/non-string collapsed to ''), not the raw env value.
+    // Callers that need to judge passphrase strength (e.g. a startup
+    // refusal for a too-short passphrase) should read this rather than
+    // re-implementing the trim themselves — otherwise the "what is the
+    // passphrase" logic lives in two places and can drift apart, exactly as
+    // it did when GHA_PASSWORD='abc' plus 20 trailing spaces satisfied a
+    // raw-length check while the effective secret was 3 characters.
+    effectiveLength: secretSource.length,
+
     checkPassphrase(candidate) {
       if (!enabled) return false;
       if (typeof candidate !== 'string' || candidate.length === 0) return false;

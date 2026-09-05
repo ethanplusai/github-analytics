@@ -384,3 +384,53 @@ test('startup does not refuse a public serverless deployment when explicitly all
     () => assertSafeToStart({ ...CONFIG, serverless: true, password: null, allowPublic: true }, off),
   );
 });
+
+// Regression: the 20-character floor must be measured on the passphrase
+// that auth.js actually accepts (trimmed), not the raw env value — a
+// short secret padded with whitespace must still be refused.
+
+test('startup refuses a passphrase padded to 20+ chars with TRAILING whitespace', () => {
+  const padded = 'abc' + ' '.repeat(20); // 23 raw chars, 3 effective
+  const auth = createAuth({ passphrase: padded });
+  assert.throws(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: padded, allowPublic: false }, auth),
+    /20 characters/,
+  );
+});
+
+test('startup refuses a passphrase padded to 20+ chars with LEADING whitespace', () => {
+  const padded = ' '.repeat(20) + 'abc';
+  const auth = createAuth({ passphrase: padded });
+  assert.throws(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: padded, allowPublic: false }, auth),
+    /20 characters/,
+  );
+});
+
+test('startup refuses a passphrase padded to 20+ chars with BOTH leading and trailing whitespace', () => {
+  const padded = '   ' + 'abc' + ' '.repeat(20);
+  const auth = createAuth({ passphrase: padded });
+  assert.throws(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: padded, allowPublic: false }, auth),
+    /20 characters/,
+  );
+});
+
+test('a whitespace-only passphrase is treated as no passphrase, so serverless refuses as public rather than starting quietly', () => {
+  const whitespaceOnly = ' '.repeat(25);
+  const auth = createAuth({ passphrase: whitespaceOnly });
+  assert.equal(auth.enabled, false, 'a whitespace-only passphrase must not enable auth');
+  assert.throws(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: whitespaceOnly, allowPublic: false }, auth),
+    /GHA_PASSWORD/,
+    'must hit the "no passphrase configured" refusal, not silently allow a public server',
+  );
+});
+
+test('a genuine 20+ character passphrase (no padding trickery) still starts normally', () => {
+  const real = 'genuinely-twenty-char-plus-passphrase';
+  const auth = createAuth({ passphrase: real });
+  assert.doesNotThrow(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: real, allowPublic: false }, auth),
+  );
+});
