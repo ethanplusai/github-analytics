@@ -137,13 +137,23 @@ export class Store {
   // This upsert is the reason the product's numbers can be trusted: a
   // truncated poll must never lower a figure already recorded.
   async ingestTrafficSeries(repoId, kind, points, nowIso) {
+    if (points.length === 0) return { rows: 0, raised: 0 };
+
+    const days = points.map((p) => dayOf(p.timestamp));
+    const placeholders = days.map(() => '?').join(', ');
+    const existingRows = await this.driver.query(`
+      SELECT day, count, uniques FROM traffic_daily
+      WHERE repo_id = ? AND kind = ? AND day IN (${placeholders})
+    `, [repoId, kind, ...days]);
+
+    const existing = new Map(existingRows.map((r) => [r.day, r]));
+
+    let raised = 0;
     const statements = [];
     for (const point of points) {
       const day = dayOf(point.timestamp);
-      statements.push({
-        sql: 'SELECT count, uniques FROM traffic_daily WHERE repo_id = ? AND kind = ? AND day = ?',
-        params: [repoId, kind, day],
-      });
+      const prior = existing.get(day);
+      if (!prior || point.count > prior.count || point.uniques > prior.uniques) raised += 1;
       statements.push({
         sql: `
           INSERT INTO traffic_daily (repo_id, kind, day, count, uniques, first_seen_at, updated_at)
@@ -157,16 +167,7 @@ export class Store {
       });
     }
 
-    const results = await this.driver.transaction(statements);
-
-    let raised = 0;
-    for (let i = 0; i < points.length; i += 1) {
-      const point = points[i];
-      const existing = results[i * 2][0] ?? null;
-      if (!existing || point.count > existing.count || point.uniques > existing.uniques) {
-        raised += 1;
-      }
-    }
+    await this.driver.transaction(statements);
     return { rows: points.length, raised };
   }
 

@@ -90,6 +90,36 @@ test('ingestTrafficSeries raises a value and reports counts', async () => {
   ]);
 });
 
+test('ingestTrafficSeries reads existing days in a single query and writes in a single transaction', async () => {
+  const store = freshStore();
+  const driver = store.driver;
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+
+  let selects = 0;
+  const realQuery = driver.query.bind(driver);
+  driver.query = async (sql, params) => {
+    if (/SELECT day, count, uniques FROM traffic_daily/.test(sql)) selects += 1;
+    return realQuery(sql, params);
+  };
+
+  let transactions = 0;
+  const realTransaction = driver.transaction.bind(driver);
+  driver.transaction = async (statements) => {
+    transactions += 1;
+    return realTransaction(statements);
+  };
+
+  const points = Array.from({ length: 14 }, (_, i) => ({
+    timestamp: `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00Z`, count: i, uniques: i,
+  }));
+  const result = await store.ingestTrafficSeries(repo.id, 'views', points, '2026-01-15T00:00:00Z');
+
+  assert.equal(selects, 1);
+  assert.equal(transactions, 1);
+  assert.deepEqual(result, { rows: 14, raised: 14 });
+});
+
 test('history outlives GitHub 14-day window', async () => {
   const store = freshStore();
   const repo = await store.upsertRepo(REPO, '2026-01-01T00:00:00Z');
