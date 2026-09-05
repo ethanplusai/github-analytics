@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "server.js": { "maxDuration": 60, "includeFiles": "web/**" }
+  },
+  "crons": [{ "path": "/api/poll", "schedule": "0 6 * * *" }]
+}

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   relativeTime, sortRepos, filterRepos, pluralise, noticeKey, isDeliberateConfirm,
-} from '../public/ui.js';
+} from '../web/ui.js';
 
 const NOW = new Date('2026-09-04T12:00:00Z');
 

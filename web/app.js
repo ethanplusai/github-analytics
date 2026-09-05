@@ -1,4 +1,4 @@
-// public/app.js
+// web/app.js
 //
 // Bootstraps the shell: the topbar (theme toggle, refresh button, status
 // pill), the notice area, the recurring status poll, and the hash router.

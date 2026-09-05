@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { openDatabase } from '../src/db.js';
+import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
 import { createApi, resolveRange } from '../src/api.js';
 import { sendError } from '../src/http.js';
@@ -13,17 +13,22 @@ function stubPoller(over = {}) {
     getState: () => ({ running: false, total: 0, done: 0, failed: 0, currentRepo: null, lastRunAt: null, lastResult: null }),
     pollRepo: async (repo) => ({ fullName: repo.fullName, ok: true, error: null }),
     pollAll: async () => ({ total: 0, ok: 0, failed: 0 }),
+    pollDue: async () => ({ total: 0, ok: 0, failed: 0, remaining: 0 }),
     seedFromGitHub: async () => ({ added: 0, skipped: 0, total: 0 }),
     ...over,
   };
 }
 
-async function withApi({ storeSetup = () => {}, poller = stubPoller(), client = null, tokenInfo = { token: 't', source: 'test', login: 'octo' } } = {}, fn) {
-  const store = new Store(openDatabase(':memory:'));
-  storeSetup(store);
+async function withApi({
+  storeSetup = () => {}, poller = stubPoller(), client = null,
+  tokenInfo = { token: 't', source: 'test', login: 'octo' },
+  config = { pollIntervalHours: 6, dbPath: '/tmp/x.db' },
+} = {}, fn) {
+  const store = new Store(createSqliteDriver(':memory:'));
+  await storeSetup(store);
   const router = createApi({
     store, poller, client, tokenInfo,
-    config: { pollIntervalHours: 6, dbPath: '/tmp/x.db' },
+    config,
     version: '1.0.0', now: () => NOW,
   });
   const server = createServer(async (req, res) => {
@@ -35,24 +40,24 @@ async function withApi({ storeSetup = () => {}, poller = stubPoller(), client = 
   try { await fn(base, store); } finally { await new Promise((r) => server.close(r)); }
 }
 
-function seedRepo(store, fullName = 'octo/hello') {
+async function seedRepo(store, fullName = 'octo/hello') {
   const [owner, name] = fullName.split('/');
-  const repo = store.upsertRepo({
+  const repo = await store.upsertRepo({
     fullName, owner, name, private: false, description: 'A test repo',
     htmlUrl: `https://github.com/${fullName}`,
   }, '2026-01-01T00:00:00Z');
-  store.ingestTrafficSeries(repo.id, 'views', [
+  await store.ingestTrafficSeries(repo.id, 'views', [
     { timestamp: '2026-01-01T00:00:00Z', count: 100, uniques: 20 },
     { timestamp: '2026-09-03T00:00:00Z', count: 7, uniques: 3 },
   ], '2026-09-04T12:00:00Z');
-  store.ingestTrafficSeries(repo.id, 'clones', [
+  await store.ingestTrafficSeries(repo.id, 'clones', [
     { timestamp: '2026-09-03T00:00:00Z', count: 4, uniques: 2 },
   ], '2026-09-04T12:00:00Z');
-  store.ingestWindowSnapshot(repo.id, '2026-09-04', 'views', { count: 7, uniques: 3 });
-  store.ingestWindowSnapshot(repo.id, '2026-09-04', 'clones', { count: 4, uniques: 2 });
-  store.ingestReferrers(repo.id, '2026-09-04', [{ referrer: 'google.com', count: 5, uniques: 3 }]);
-  store.ingestPaths(repo.id, '2026-09-04', [{ path: '/octo/hello', title: 'Overview', count: 9, uniques: 4 }]);
-  store.markPolled(repo.id, { at: '2026-09-04T12:00:00Z' });
+  await store.ingestWindowSnapshot(repo.id, '2026-09-04', 'views', { count: 7, uniques: 3 });
+  await store.ingestWindowSnapshot(repo.id, '2026-09-04', 'clones', { count: 4, uniques: 2 });
+  await store.ingestReferrers(repo.id, '2026-09-04', [{ referrer: 'google.com', count: 5, uniques: 3 }]);
+  await store.ingestPaths(repo.id, '2026-09-04', [{ path: '/octo/hello', title: 'Overview', count: 9, uniques: 4 }]);
+  await store.markPolled(repo.id, { at: '2026-09-04T12:00:00Z' });
   return repo;
 }
 
@@ -97,10 +102,10 @@ test('GET /api/status falls back to the persisted poll run after a restart', asy
   // remembers the last run. Reporting "never" there would tell the user
   // nothing was collected while the dashboard is full of data.
   await withApi({
-    storeSetup: (s) => {
-      seedRepo(s);
-      const id = s.startPollRun('2026-09-04T09:00:00Z');
-      s.finishPollRun(id, { total: 88, ok: 87, failed: 1, at: '2026-09-04T09:04:00Z' });
+    storeSetup: async (s) => {
+      await seedRepo(s);
+      const id = await s.startPollRun('2026-09-04T09:00:00Z');
+      await s.finishPollRun(id, { total: 88, ok: 87, failed: 1, at: '2026-09-04T09:04:00Z' });
     },
   }, async (base) => {
     const body = await (await fetch(`${base}/api/status`)).json();
@@ -120,15 +125,34 @@ test('GET /api/status prefers the live poller state over the persisted one', asy
         lastRunAt: '2026-09-04T12:00:00Z', lastResult: live, seeding: false,
       }),
     }),
-    storeSetup: (s) => {
-      seedRepo(s);
-      const id = s.startPollRun('2026-09-04T09:00:00Z');
-      s.finishPollRun(id, { total: 88, ok: 87, failed: 1, at: '2026-09-04T09:04:00Z' });
+    storeSetup: async (s) => {
+      await seedRepo(s);
+      const id = await s.startPollRun('2026-09-04T09:00:00Z');
+      await s.finishPollRun(id, { total: 88, ok: 87, failed: 1, at: '2026-09-04T09:04:00Z' });
     },
   }, async (base) => {
     const body = await (await fetch(`${base}/api/status`)).json();
     assert.equal(body.poll.lastRunAt, '2026-09-04T12:00:00Z', 'this run wins over the stale row');
     assert.deepEqual(body.poll.lastResult, live);
+  });
+});
+
+test('GET /api/status reports dataPath as the sqlite file by default', async () => {
+  await withApi({ config: { pollIntervalHours: 6, dbPath: '/tmp/x.db' } }, async (base) => {
+    const body = await (await fetch(`${base}/api/status`)).json();
+    assert.equal(body.dataPath, '/tmp/x.db');
+  });
+});
+
+// Regression: dataPath used to report config.dbPath unconditionally, which
+// on a Postgres deployment is a SQLite file that doesn't exist. It must
+// name the actual target instead — and never leak the connection string.
+test('GET /api/status reports the Postgres target, not a meaningless sqlite path, when POSTGRES_URL is set', async () => {
+  const postgresUrl = 'postgres://user:secret-password@example.neon.tech/db';
+  await withApi({ config: { pollIntervalHours: 6, dbPath: '/tmp/x.db', postgresUrl } }, async (base) => {
+    const body = await (await fetch(`${base}/api/status`)).json();
+    assert.equal(body.dataPath, 'neon postgres');
+    assert.doesNotMatch(JSON.stringify(body), /secret-password/);
   });
 });
 
@@ -220,12 +244,12 @@ test('a repo with no data yet returns empty arrays, not an error', async () => {
 test('an untracked repo is a 404 from the detail endpoint, not a 200', async () => {
   await withApi({ storeSetup: (s) => seedRepo(s) }, async (base, store) => {
     assert.equal((await fetch(`${base}/api/repos/octo/hello`)).status, 200);
-    store.untrackRepo('octo/hello', '2026-09-04T13:00:00Z');
+    await store.untrackRepo('octo/hello', '2026-09-04T13:00:00Z');
     const res = await fetch(`${base}/api/repos/octo/hello`);
     assert.equal(res.status, 404, 'untracking hides the repo from the detail endpoint');
     assert.equal((await res.json()).error.code, 'not_found');
     assert.equal(
-      store.listRepos({ includeUntracked: true }).length, 1,
+      (await store.listRepos({ includeUntracked: true })).length, 1,
       'the row and its history still exist — this is a soft delete',
     );
   });
@@ -259,7 +283,7 @@ test('POST /api/repos adds a repo, polls it immediately, and returns its summary
     const body = await res.json();
     assert.equal(body.repo.fullName, 'octo/new');
     assert.deepEqual(polled, ['octo/new']);
-    assert.equal(store.countTrackedRepos(), 1);
+    assert.equal(await store.countTrackedRepos(), 1);
   });
 });
 
@@ -308,8 +332,8 @@ test('DELETE untracks without deleting history and 404s for an unknown repo', as
     const res = await fetch(`${base}/api/repos/octo/hello`, { method: 'DELETE' });
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { untracked: true, fullName: 'octo/hello' });
-    assert.equal(store.countTrackedRepos(), 0);
-    assert.equal(store.listRepos({ includeUntracked: true }).length, 1);
+    assert.equal(await store.countTrackedRepos(), 0);
+    assert.equal((await store.listRepos({ includeUntracked: true })).length, 1);
 
     const again = await fetch(`${base}/api/repos/octo/hello`, { method: 'DELETE' });
     assert.equal(again.status, 404);
@@ -375,5 +399,53 @@ test('POST /api/poll starts a run in the background and reports skips', async ()
   }, async (base) => {
     const res = await fetch(`${base}/api/poll`, { method: 'POST' });
     assert.equal(res.status, 202, 'a background run always answers 202');
+  });
+});
+
+const cronConfig = { pollIntervalHours: 6, dbPath: '/tmp/x.db', cronSecret: 'test-secret' };
+
+test('GET /api/poll rejects a request with no bearer token', async () => {
+  await withApi({ client: {}, config: cronConfig }, async (base) => {
+    const res = await fetch(`${base}/api/poll`);
+    assert.equal(res.status, 401);
+  });
+});
+
+test('GET /api/poll rejects a wrong bearer token', async () => {
+  await withApi({ client: {}, config: cronConfig }, async (base) => {
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer wrong' } });
+    assert.equal(res.status, 401);
+  });
+});
+
+test('GET /api/poll refuses when no secret is configured, rather than running open', async () => {
+  await withApi({ client: {} }, async (base) => {
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } });
+    assert.equal(res.status, 401);
+  });
+});
+
+test('GET /api/poll runs when the token matches', async () => {
+  const poller = stubPoller({ pollDue: async () => ({ total: 2, ok: 2, failed: 0, remaining: 0 }) });
+  await withApi({ client: {}, poller, config: cronConfig }, async (base) => {
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).total, 2);
+  });
+});
+
+test('GET /api/poll reports 409 while another run holds the lock', async () => {
+  await withApi({ client: {}, config: cronConfig }, async (base, store) => {
+    await store.acquirePollLock('2026-09-04T12:00:00Z', '2099-01-01T00:00:00Z');
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } });
+    assert.equal(res.status, 409);
+  });
+});
+
+test('GET /api/poll releases the lock even when the poll throws', async () => {
+  const poller = stubPoller({ pollDue: async () => { throw new Error('boom'); } });
+  await withApi({ client: {}, poller, config: cronConfig }, async (base, store) => {
+    await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } }).catch(() => {});
+    assert.equal(await store.getMeta('poll_lock'), null);
   });
 });

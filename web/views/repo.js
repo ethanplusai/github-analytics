@@ -1,4 +1,4 @@
-// public/views/repo.js
+// web/views/repo.js
 //
 // The repository detail view — the payoff of the whole product. Everything
 // else exists so that this page can show a repository's whole history, past

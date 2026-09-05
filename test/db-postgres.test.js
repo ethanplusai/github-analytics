@@ -1,0 +1,58 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { toDollarPlaceholders, coerceRow, createPostgresDriver } from '../src/db/postgres.js';
+
+test('rewrites ? to $n in order', () => {
+  assert.equal(
+    toDollarPlaceholders('SELECT * FROM t WHERE a = ? AND b = ?'),
+    'SELECT * FROM t WHERE a = $1 AND b = $2',
+  );
+});
+
+test('leaves a ? inside a string literal alone', () => {
+  assert.equal(
+    toDollarPlaceholders("SELECT * FROM t WHERE a = ? AND b = 'why?'"),
+    "SELECT * FROM t WHERE a = $1 AND b = 'why?'",
+  );
+});
+
+test('handles an escaped quote inside a literal', () => {
+  assert.equal(
+    toDollarPlaceholders("SELECT 'it''s ?' AS a, ? AS b"),
+    "SELECT 'it''s ?' AS a, $1 AS b",
+  );
+});
+
+test('coerces int8 and numeric columns to numbers', () => {
+  const fields = [
+    { name: 'c', dataTypeID: 20 },
+    { name: 's', dataTypeID: 1700 },
+    { name: 'day', dataTypeID: 25 },
+  ];
+  assert.deepEqual(
+    coerceRow({ c: '88', s: '1204', day: '2026-01-01' }, fields),
+    { c: 88, s: 1204, day: '2026-01-01' },
+  );
+});
+
+test('leaves nulls null rather than coercing to zero', () => {
+  const fields = [{ name: 'c', dataTypeID: 20 }];
+  assert.deepEqual(coerceRow({ c: null }, fields), { c: null });
+});
+
+// Regression: neon() embeds the entire connection string — password
+// included — in its own error message when the string is malformed, and
+// that message reaches the process log verbatim on a startup failure. The
+// driver must redact it.
+test('a malformed POSTGRES_URL produces an error that does not contain the string that was passed in', async () => {
+  const badUrl = 'postgres://someuser:super-secret-password@bad host/db';
+  await assert.rejects(
+    () => createPostgresDriver(badUrl),
+    (err) => {
+      assert.ok(!err.message.includes(badUrl), 'the raw connection string must not appear in the error');
+      assert.ok(!err.message.includes('super-secret-password'), 'the password must not appear in the error');
+      assert.match(err.message, /POSTGRES_URL/);
+      return true;
+    },
+  );
+});

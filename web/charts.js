@@ -1,4 +1,4 @@
-// public/charts.js
+// web/charts.js
 //
 // Zero-dependency SVG chart module. This file is imported by Node for its
 // pure-function tests AND served to the browser as an ES module, so it must

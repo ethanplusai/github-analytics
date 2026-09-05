@@ -8,9 +8,12 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning bin/start.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch bin/start.js",
-    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+    "test": "node --disable-warning=ExperimentalWarning --experimental-test-module-mocks --test \"test/**/*.test.js\""
   },
   "engines": {
     "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0"
   }
 }

@@ -47,17 +47,17 @@ export class Poller {
         this.client.getPaths(repo.fullName),
       ]);
 
-      this.store.ingestTrafficSeries(repo.id, 'clones', clones.points, iso);
-      this.store.ingestTrafficSeries(repo.id, 'views', views.points, iso);
-      this.store.ingestWindowSnapshot(repo.id, day, 'clones', { count: clones.count, uniques: clones.uniques });
-      this.store.ingestWindowSnapshot(repo.id, day, 'views', { count: views.count, uniques: views.uniques });
-      this.store.ingestReferrers(repo.id, day, referrers);
-      this.store.ingestPaths(repo.id, day, paths);
-      this.store.markPolled(repo.id, { at: iso });
+      await this.store.ingestTrafficSeries(repo.id, 'clones', clones.points, iso);
+      await this.store.ingestTrafficSeries(repo.id, 'views', views.points, iso);
+      await this.store.ingestWindowSnapshot(repo.id, day, 'clones', { count: clones.count, uniques: clones.uniques });
+      await this.store.ingestWindowSnapshot(repo.id, day, 'views', { count: views.count, uniques: views.uniques });
+      await this.store.ingestReferrers(repo.id, day, referrers);
+      await this.store.ingestPaths(repo.id, day, paths);
+      await this.store.markPolled(repo.id, { at: iso });
 
       return { fullName: repo.fullName, ok: true, error: null };
     } catch (err) {
-      this.store.markPolled(repo.id, { at: iso, error: err.message });
+      await this.store.markPolled(repo.id, { at: iso, error: err.message });
       this.logger.error(`poll failed for ${repo.fullName}: ${err.message}`);
       return { fullName: repo.fullName, ok: false, error: err.message, errorKind: err.kind };
     }
@@ -70,7 +70,7 @@ export class Poller {
     this.state.running = true;
 
     try {
-      const repos = this.store.listRepos();
+      const repos = await this.store.listRepos();
       const total = repos.length;
       this.state.total = total;
       this.state.done = 0;
@@ -78,7 +78,7 @@ export class Poller {
       this.state.currentRepo = null;
 
       const startedAt = this.now().toISOString();
-      const runId = this.store.startPollRun(startedAt);
+      const runId = await this.store.startPollRun(startedAt);
 
       let ok = 0;
       let failed = 0;
@@ -111,7 +111,7 @@ export class Poller {
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
       const finishedAt = this.now().toISOString();
-      this.store.finishPollRun(runId, { total, ok, failed, at: finishedAt });
+      await this.store.finishPollRun(runId, { total, ok, failed, at: finishedAt });
 
       this.state.lastRunAt = finishedAt;
       const result = { total, ok, failed, startedAt, finishedAt, aborted };
@@ -132,14 +132,14 @@ export class Poller {
     this.state.seeding = true;
     try {
       const remote = await this.client.listOwnedRepos();
-      const known = new Set(this.store.listRepos({ includeUntracked: true }).map((r) => r.fullName));
+      const known = new Set((await this.store.listRepos({ includeUntracked: true })).map((r) => r.fullName));
       const nowIso = this.now().toISOString();
 
       let added = 0;
       let skipped = 0;
       for (const repo of remote) {
         if (repo.canReadTraffic === true && !known.has(repo.fullName)) {
-          this.store.upsertRepo({
+          await this.store.upsertRepo({
             fullName: repo.fullName,
             owner: repo.owner,
             name: repo.name,
@@ -153,7 +153,7 @@ export class Poller {
         }
       }
 
-      this.store.setMeta('seeded_at', nowIso);
+      await this.store.setMeta('seeded_at', nowIso);
       return { added, skipped, total: remote.length };
     } finally {
       this.state.seeding = false;
@@ -164,7 +164,7 @@ export class Poller {
     if (!this.client) return { seeded: null, polled: null, error: 'no_token' };
 
     let seeded = null;
-    if (autoSeed && !this.store.getMeta('seeded_at')) {
+    if (autoSeed && !(await this.store.getMeta('seeded_at'))) {
       try {
         seeded = await this.seedFromGitHub();
       } catch (err) {
@@ -175,7 +175,7 @@ export class Poller {
 
     let polled = null;
     try {
-      const stale = this.store.listRepos().some((r) => isStale(r, this.now(), this.intervalHours));
+      const stale = (await this.store.listRepos()).some((r) => isStale(r, this.now(), this.intervalHours));
       polled = stale ? await this.pollAll() : null;
     } catch (err) {
       this.logger.error(`polling failed: ${err.message}`);
@@ -183,6 +183,42 @@ export class Poller {
     }
 
     return { seeded, polled, error: null };
+  }
+
+  // Bounded by both a count and a wall clock so an invocation always returns
+  // before the platform's function limit. Repos not reached this run are
+  // simply the stalest next run — and because GitHub re-reports 14 days on
+  // every call, nothing is lost by deferring one.
+  //
+  // Records a poll run the same way pollAll() does — otherwise a cron-only
+  // deployment never has a persisted run to fall back on, and /api/status
+  // reports "Updated never" forever even while polling is working fine.
+  // The recording happens in a finally so it still lands if pollRepo throws.
+  async pollDue({ limit = 25, deadlineMs = 45000 } = {}) {
+    const startedMs = Date.now();
+    const repos = await this.store.listDueRepos(limit);
+    const startedAt = this.now().toISOString();
+    const runId = await this.store.startPollRun(startedAt);
+
+    let ok = 0;
+    let failed = 0;
+    let started = 0;
+
+    try {
+      for (const repo of repos) {
+        if (Date.now() - startedMs > deadlineMs) break;
+        started += 1;
+        const result = await this.pollRepo(repo);
+        if (result.ok) ok += 1; else failed += 1;
+      }
+    } finally {
+      const finishedAt = this.now().toISOString();
+      await this.store.finishPollRun(runId, { total: started, ok, failed, at: finishedAt });
+      this.state.lastRunAt = finishedAt;
+      this.state.lastResult = { total: started, ok, failed, startedAt, finishedAt };
+    }
+
+    return { total: started, ok, failed, remaining: repos.length - started };
   }
 
   start(intervalHours = this.intervalHours) {

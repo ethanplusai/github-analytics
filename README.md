@@ -51,6 +51,7 @@ Everything has a working default. You shouldn't need any of these.
 | `GITHUB_TOKEN` | — | Token to use, ahead of everything else |
 | `GH_TOKEN` | — | Same, checked second |
 | `PORT` | `4319` | Port to bind. If it's taken, the next 20 are tried |
+| `GHA_PORT` | `4319` | Same as `PORT`, checked second |
 | `GHA_HOST` | `127.0.0.1` | Interface to bind |
 | `GHA_DATA_DIR` | `~/.github-analytics` | Where the database lives |
 | `GHA_DB_PATH` | `<data dir>/analytics.db` | Override the database file directly |
@@ -58,6 +59,14 @@ Everything has a working default. You shouldn't need any of these.
 | `GHA_AUTO_SEED` | `1` | Discover and add your repos on first launch |
 | `GHA_OPEN` | `1` | Open a browser on start |
 | `GHA_ALLOWED_HOSTS` | — | Extra `Host` values to accept, for a reverse proxy |
+| `GHA_API_BASE_URL` | `https://api.github.com` | GitHub API base URL. Override to point at a mock server for testing |
+| `POSTGRES_URL` | — | Postgres/Neon connection string. When set, traffic is stored there instead of SQLite (`DATABASE_URL` also works — either name is read) |
+| `GHA_POLL_MODE` | `interval`, or `cron` when `VERCEL` is set | `interval` runs the built-in timer; `cron` disables it and waits for `GET /api/poll` to be called from outside instead |
+| `CRON_SECRET` | — | Bearer token required by `GET /api/poll`. With none set, that endpoint refuses every request rather than run unauthenticated |
+| `GHA_POLL_DEADLINE_MS` | `45000` | How long `GET /api/poll` may run before it stops starting new repos and returns. Must stay below the deployment's function `maxDuration` (`vercel.json` sets that to `60` seconds on Vercel's Hobby plan) — otherwise the platform kills the invocation first and the poll lock isn't released until its TTL expires |
+| `GHA_PASSWORD` | — | Passphrase for the built-in login. When set, every route except `GET /api/poll` requires a signed session cookie, issued at `/login`. Once the app is reachable beyond loopback — serverless (`VERCEL` set), or self-hosted with `GHA_ALLOWED_HOSTS` set — it refuses to start with this unset unless `GHA_ALLOW_PUBLIC=1` is also set, and refuses a passphrase whose trimmed length is under 20 characters. Use a password manager's generated value, not a memorable phrase — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| `GHA_ALLOW_PUBLIC` | `0` | Deliberate override that lets a deployment reachable beyond loopback start with no `GHA_PASSWORD`. Doing so puts every tracked repository's name and full traffic history on the open web for anyone who finds the URL |
+| `GHA_SECURE_COOKIES` | Auto: on when reachable beyond loopback (`VERCEL` set, or `GHA_ALLOWED_HOSTS` set), off otherwise | Overrides whether the session cookie is issued `Secure` and `__Host-`-prefixed. Setting it to `0` removes these protections: the session cookie can travel in cleartext and can be shadowed by a sibling subdomain. On a public HTTPS deployment, this strips security the login depends on. Only set to `0` when TLS is terminated by a layer this app cannot see, and only if you understand the trade. The default is correct for both documented public deployment shapes |
 
 ## Your data
 
@@ -77,20 +86,26 @@ The server listens on loopback only and refuses requests whose `Host` header isn
 
 **The port was busy.** It moves to the next free one by itself. Read the URL in the banner.
 
-**Node is too old.** You need Node 22.13 or newer — the database is Node's built-in `node:sqlite`, which is what lets this project run with zero dependencies.
+**Node is too old.** You need Node 22.13 or newer — the database is Node's built-in `node:sqlite`, which is what lets `npm start` run locally with nothing to install.
 
-## Deploying it behind a subdomain
+## Running it on the internet
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+The app has an optional login (`GHA_PASSWORD`): a single shared passphrase, a signed session cookie, no accounts and no per-user anything. It's off by default for local use. Anyone who can reach an instance with it off can see every tracked repository's name and its traffic, private repos included, so it is **required** for any public deployment that holds private repositories.
+
+Self-hosted, a reverse proxy with basic auth (or an identity-aware proxy, a VPN, or an IP allowlist) can stand in for it — but the app doesn't know that boundary exists, so it still needs telling: pair it with `GHA_ALLOW_PUBLIC=1`, or the app refuses to start the moment `GHA_ALLOWED_HOSTS` is set (which self-hosting behind a proxy requires) with no `GHA_PASSWORD`. On Vercel's Hobby plan, `GHA_PASSWORD` is the only option — production domains can't be put behind Vercel's own protection there. Either way, the app enforces this itself at startup: it refuses to start once it's reachable beyond loopback without either `GHA_PASSWORD` or a deliberate `GHA_ALLOW_PUBLIC=1`.
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full picture, including what to check after deploying.
 
 ## Development
 
 ```bash
-npm test     # 122 tests, no network access required
+npm test     # 258 passing, 1 skipped, no network access required
 npm run dev  # restarts on change
 ```
 
-No dependencies and no build step — `package.json` has no `dependencies` block at all. Everything comes from the Node standard library and the browser.
+The one skip is the Postgres conformance test, which compares SQLite and Postgres side by side — it needs a scratch database to run against (`GHA_TEST_POSTGRES_URL`), so it stays skipped unless you set that.
+
+No build step, and no install step for local use. `package.json` lists exactly one dependency, `@neondatabase/serverless` — imported dynamically, from `src/db/postgres.js`, and only reached when `POSTGRES_URL` (or `DATABASE_URL`) is set. Run it locally against SQLite, as above, and that import is never touched. Everything else comes from the Node standard library and the browser.
 
 | Path | What's in it |
 |---|---|
@@ -104,4 +119,4 @@ No dependencies and no build step — `package.json` has no `dependencies` block
 | `src/poller.js` | Seeding, the concurrency pool, the schedule |
 | `src/http.js` | Router, static files, the loopback guard |
 | `src/api.js` | The JSON API |
-| `public/` | The dashboard: `charts.js` (hand-rolled SVG), `views/`, `styles.css` |
+| `web/` | The dashboard: `charts.js` (hand-rolled SVG), `views/`, `styles.css` |

@@ -1,4 +1,4 @@
-// public/views/home.js
+// web/views/home.js
 //
 // The repository overview: hero + stats for the selected range, a controls
 // row (range / sort / search), and the repository grid. All view-rendering
