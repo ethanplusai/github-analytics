@@ -7,7 +7,9 @@
 // single-axis time-series charts, referrer/path bar lists, and an honesty
 // footnote about the rolling 14-day window. See task-10-brief.md.
 
-import { el, clear, relativeTime, isDeliberateConfirm } from '../ui.js';
+import {
+  el, clear, relativeTime, isDeliberateConfirm, formatCloneRatio,
+} from '../ui.js';
 import { getRepo, removeRepo, triggerPoll } from '../api.js';
 import {
   renderTimeSeries, renderBarList, formatCount, formatFullCount, formatDayLong,
@@ -246,9 +248,13 @@ function buildHeroStats(data) {
 }
 
 // ---------------------------------------------------------------------
-// Charts — two single-axis time series, stacked. Never combined: clones and
-// views differ by an order of magnitude, and dataviz forbids dual-axis
-// plots.
+// Charts — three single-axis time series, stacked. Never combined: the
+// series differ by orders of magnitude, and dataviz forbids dual-axis
+// plots. Watchers are never plotted alongside stars/forks — GitHub
+// backfills no history for them (a flat line at zero would be a fabricated
+// past), and the chart palette has exactly two validated categorical
+// slots, already spent on stars and forks. The latest real watcher figure
+// is shown as a stat below instead.
 // ---------------------------------------------------------------------
 
 const CHART_EMPTY_MESSAGE = 'No traffic recorded yet. The first poll runs within a few minutes of adding a repository.';
@@ -257,7 +263,8 @@ function buildCharts(data, chartHandles) {
   const stack = el('div', { className: 'chart-stack' });
   const viewsContainer = el('div');
   const clonesContainer = el('div');
-  stack.append(viewsContainer, clonesContainer);
+  const metricsContainer = el('div');
+  stack.append(viewsContainer, clonesContainer, metricsContainer);
 
   chartHandles.push(renderTimeSeries(viewsContainer, {
     title: 'Views',
@@ -280,6 +287,42 @@ function buildCharts(data, chartHandles) {
     ],
     emptyMessage: CHART_EMPTY_MESSAGE,
   }));
+
+  // A caption for the Clones chart above, but rendered as a sibling rather
+  // than inside clonesContainer: renderTimeSeries replaces that container's
+  // entire contents on every redraw (table toggle, resize), which would
+  // wipe a caption living inside it. Rendered only when there's a ratio to
+  // explain — a null ratio (no cloners) gets nothing, not a dash.
+  const ratioSentence = formatCloneRatio(data.cloneRatio?.ratio);
+  if (ratioSentence) {
+    stack.insertBefore(el('p', { className: 'muted', text: ratioSentence }), metricsContainer);
+  }
+
+  const { watchersFrom } = data.metrics;
+  chartHandles.push(renderTimeSeries(metricsContainer, {
+    title: 'Stars and forks',
+    subtitle: watchersFrom
+      ? `Daily totals. Watchers recorded from ${formatDayLong(watchersFrom)} — GitHub publishes no history for them.`
+      : 'Daily totals',
+    days: data.metrics.days,
+    series: [
+      { key: 'stars', label: 'Stars', values: data.metrics.stars, slot: 1 },
+      { key: 'forks', label: 'Forks', values: data.metrics.forks, slot: 2 },
+    ],
+    emptyMessage: 'No star or fork history recorded yet.',
+  }));
+
+  const latestWatchers = [...data.metrics.watchers].reverse().find((w) => w != null);
+  if (latestWatchers != null) {
+    const watcherStats = el('div', { className: 'stats' });
+    const tile = buildStat('Watchers', latestWatchers);
+    tile.append(el('div', {
+      className: 'stat__sub',
+      text: `Recorded from ${formatDayLong(watchersFrom)} — GitHub publishes no earlier watcher history.`,
+    }));
+    watcherStats.append(tile);
+    stack.append(watcherStats);
+  }
 
   return stack;
 }
