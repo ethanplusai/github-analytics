@@ -228,12 +228,63 @@ test('issueCookie omits the __Host- prefix when not secure, for plain http', () 
 });
 
 test('a shadowing plain-named cookie does not displace a valid __Host- cookie', () => {
+  // This is the secure-deployment scenario: a plain-named cookie riding
+  // alongside the real __Host- one must not win, since the __Host- cookie
+  // is the one a sibling subdomain (or a plain-http replay) could never
+  // have produced legitimately. See isAuthenticated's { secure: true } path.
   const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
   const setCookie = auth.issueCookie({ secure: true });
   const value = /gha_session=([^;]+)/.exec(setCookie)[1];
-  // A bogus plain-named cookie riding alongside the real __Host- one must
-  // not win — the __Host- cookie is the one a sibling subdomain could never
-  // have set.
   const req = { headers: { cookie: `gha_session=garbage; __Host-gha_session=${value}` } };
+  assert.equal(auth.isAuthenticated(req, { secure: true }), true);
+});
+
+// --- Fix-round 2: the __Host- fallback was a downgrade path ---
+//
+// isAuthenticated must know whether the current deployment is secure. If it
+// unconditionally falls back to the plain cookie name, a cookie that was
+// validly issued (or sniffed) on a plain-http instance — using the same
+// passphrase, hence the same signing key — verifies just as well against an
+// https instance. That is exactly the replay __Host- exists to stop.
+
+test('with { secure: true }, a validly-signed cookie under the PLAIN name is rejected', () => {
+  const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
+  // Issue as if from a plain-http instance sharing the same passphrase.
+  const setCookie = auth.issueCookie({ secure: false });
+  const value = /gha_session=([^;]+)/.exec(setCookie)[1];
+  const req = { headers: { cookie: `gha_session=${value}` } };
+  assert.equal(auth.isAuthenticated(req, { secure: true }), false);
+});
+
+test('with { secure: true }, a validly-signed __Host- cookie is accepted', () => {
+  const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
+  const setCookie = auth.issueCookie({ secure: true });
+  const value = /gha_session=([^;]+)/.exec(setCookie)[1];
+  const req = { headers: { cookie: `__Host-gha_session=${value}` } };
+  assert.equal(auth.isAuthenticated(req, { secure: true }), true);
+});
+
+test('with { secure: false }, a validly-signed plain cookie is accepted (the local path)', () => {
+  const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
+  const setCookie = auth.issueCookie({ secure: false });
+  const value = /gha_session=([^;]+)/.exec(setCookie)[1];
+  const req = { headers: { cookie: `gha_session=${value}` } };
+  assert.equal(auth.isAuthenticated(req, { secure: false }), true);
+});
+
+test('with { secure: false }, a validly-signed __Host- cookie is still accepted', () => {
+  // A developer who ran with secure once should not be locked out locally.
+  const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
+  const setCookie = auth.issueCookie({ secure: true });
+  const value = /gha_session=([^;]+)/.exec(setCookie)[1];
+  const req = { headers: { cookie: `__Host-gha_session=${value}` } };
+  assert.equal(auth.isAuthenticated(req, { secure: false }), true);
+});
+
+test('calling isAuthenticated(req) with no options behaves as { secure: false }', () => {
+  const auth = createAuth({ passphrase: PASS, now: () => 1_000_000, ttlMs: 1000 });
+  const setCookie = auth.issueCookie({ secure: false });
+  const value = /gha_session=([^;]+)/.exec(setCookie)[1];
+  const req = { headers: { cookie: `gha_session=${value}` } };
   assert.equal(auth.isAuthenticated(req), true);
 });

@@ -30,6 +30,14 @@ export function parseCookies(header) {
 // Comparing digests rather than raw inputs keeps the compared buffers the same
 // length whatever the candidate is, so timingSafeEqual never throws and the
 // comparison cannot leak the passphrase's length.
+//
+// IMPORTANT — do not "simplify" the final line to a hex/base64 `===` on the
+// digests. It would look equivalent (and every test here would still pass:
+// constant-time-ness is a *timing* side channel, which equality assertions
+// structurally cannot observe, and a statistical timing test would be too
+// flaky to keep in this suite), but it would silently drop the actual
+// protection this function exists for. timingSafeEqual is the guard; this
+// comment is the test for it.
 function constantTimeEquals(a, b) {
   const da = createHash('sha256').update(String(a)).digest();
   const db = createHash('sha256').update(String(b)).digest();
@@ -89,14 +97,19 @@ export function createAuth({ passphrase, sessionSecret = null, now = () => Date.
       return parts.join('; ');
     },
 
-    isAuthenticated(req) {
+    isAuthenticated(req, { secure = false } = {}) {
       if (!enabled) return false;
       const cookies = parseCookies(req?.headers?.cookie);
-      // Prefer the __Host- cookie when present: browsers only ever let a
-      // legitimate response set that name over https with Path=/ and no
-      // Domain, so it can't have been shadowed by a sibling subdomain. Fall
-      // back to the plain name only for local, plain-http deployments.
-      const raw = cookies[`${HOST_PREFIX}${COOKIE_NAME}`] ?? cookies[COOKIE_NAME];
+      // On a secure deployment ONLY the __Host- cookie is acceptable. The
+      // plain name is reachable over http, so honouring it here would let a
+      // cookie issued (or sniffed) on a plain-http instance be replayed
+      // against this one — which is the exact attack __Host- exists to stop.
+      // Off a secure deployment, prefer the plain name (that's what a local,
+      // plain-http instance issues) but still accept a __Host- cookie, so a
+      // developer who ran with secure once isn't locked out locally.
+      const raw = secure
+        ? cookies[`${HOST_PREFIX}${COOKIE_NAME}`]
+        : cookies[COOKIE_NAME] ?? cookies[`${HOST_PREFIX}${COOKIE_NAME}`];
       if (!raw) return false;
       const segments = raw.split('.');
       if (segments.length !== 3) return false;
