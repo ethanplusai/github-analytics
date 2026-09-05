@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createApp, listenWithFallback, createShutdownHandler } from '../server.js';
-import { openDatabase } from '../src/db.js';
+import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
 import { Poller } from '../src/poller.js';
 
@@ -13,7 +13,7 @@ const CONFIG = {
 };
 
 async function withApp(fn, { client = null, tokenInfo = { token: 't', source: 'test', login: 'octo' } } = {}) {
-  const store = new Store(openDatabase(':memory:'));
+  const store = new Store(createSqliteDriver(':memory:'));
   const poller = new Poller({ store, client, now: () => new Date('2026-09-04T12:00:00Z') });
   const { requestListener } = createApp({
     config: CONFIG, tokenInfo, client, store, poller, version: '1.0.0',

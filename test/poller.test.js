@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openDatabase } from '../src/db.js';
+import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
 import { Poller, isStale } from '../src/poller.js';
 import { GitHubError } from '../src/github.js';
@@ -17,7 +17,7 @@ function fakeClient(overrides = {}) {
 }
 
 function setup(clientOverrides = {}, opts = {}) {
-  const store = new Store(openDatabase(':memory:'));
+  const store = new Store(createSqliteDriver(':memory:'));
   const client = fakeClient(clientOverrides);
   const poller = new Poller({
     store, client, now: () => new Date('2026-09-04T12:00:00Z'), concurrency: 2, ...opts,
@@ -45,7 +45,7 @@ test('pollRepo writes all four datasets and the window snapshot', async () => {
     getReferrers: async () => [{ referrer: 'google.com', count: 8, uniques: 5 }],
     getPaths: async () => [{ path: '/octo/hello', title: 'Overview', count: 20, uniques: 9 }],
   });
-  const repo = store.upsertRepo({
+  const repo = await store.upsertRepo({
     fullName: 'octo/hello', owner: 'octo', name: 'hello', private: false,
     description: null, htmlUrl: null,
   }, '2026-09-01T00:00:00Z');
@@ -53,31 +53,31 @@ test('pollRepo writes all four datasets and the window snapshot', async () => {
   const result = await poller.pollRepo(repo);
   assert.deepEqual(result, { fullName: 'octo/hello', ok: true, error: null });
 
-  assert.deepEqual(store.dailySeries(repo.id, 'clones'), [{ day: '2026-09-03', count: 4, uniques: 2 }]);
-  assert.deepEqual(store.dailySeries(repo.id, 'views'), [{ day: '2026-09-03', count: 11, uniques: 6 }]);
-  assert.equal(store.latestReferrers(repo.id, 10).items[0].referrer, 'google.com');
-  assert.equal(store.latestPaths(repo.id, 10).items[0].path, '/octo/hello');
-  assert.deepEqual(store.latestWindow(repo.id), {
+  assert.deepEqual(await store.dailySeries(repo.id, 'clones'), [{ day: '2026-09-03', count: 4, uniques: 2 }]);
+  assert.deepEqual(await store.dailySeries(repo.id, 'views'), [{ day: '2026-09-03', count: 11, uniques: 6 }]);
+  assert.equal((await store.latestReferrers(repo.id, 10)).items[0].referrer, 'google.com');
+  assert.equal((await store.latestPaths(repo.id, 10)).items[0].path, '/octo/hello');
+  assert.deepEqual(await store.latestWindow(repo.id), {
     day: '2026-09-04',
     views: { count: 90, uniques: 40 },
     clones: { count: 30, uniques: 12 },
   });
-  assert.equal(store.getRepo('octo/hello').lastPolledAt, '2026-09-04T12:00:00.000Z');
-  assert.equal(store.getRepo('octo/hello').lastError, null);
+  assert.equal((await store.getRepo('octo/hello')).lastPolledAt, '2026-09-04T12:00:00.000Z');
+  assert.equal((await store.getRepo('octo/hello')).lastError, null);
 });
 
 test('pollRepo records a readable error and does not throw', async () => {
   const { store, poller } = setup({
     getClones: async () => { throw new GitHubError('Must have push access', { status: 403, kind: 'forbidden' }); },
   });
-  const repo = store.upsertRepo({
+  const repo = await store.upsertRepo({
     fullName: 'octo/nope', owner: 'octo', name: 'nope', private: false, description: null, htmlUrl: null,
   }, '2026-09-01T00:00:00Z');
 
   const result = await poller.pollRepo(repo);
   assert.equal(result.ok, false);
   assert.match(result.error, /push access/);
-  assert.match(store.getRepo('octo/nope').lastError, /push access/);
+  assert.match((await store.getRepo('octo/nope')).lastError, /push access/);
 });
 
 test('pollAll keeps going when one repo fails and reports a tally', async () => {
@@ -88,7 +88,7 @@ test('pollAll keeps going when one repo fails and reports a tally', async () => 
     },
   });
   for (const name of ['good1', 'bad', 'good2']) {
-    store.upsertRepo({
+    await store.upsertRepo({
       fullName: `octo/${name}`, owner: 'octo', name, private: false, description: null, htmlUrl: null,
     }, '2026-09-01T00:00:00Z');
   }
@@ -97,7 +97,7 @@ test('pollAll keeps going when one repo fails and reports a tally', async () => 
   assert.equal(summary.total, 3);
   assert.equal(summary.ok, 2);
   assert.equal(summary.failed, 1);
-  assert.equal(store.lastPollRun().failed, 1);
+  assert.equal((await store.lastPollRun()).failed, 1);
   assert.equal(poller.getState().running, false);
   assert.equal(poller.getState().lastResult.failed, 1);
 });
@@ -111,7 +111,7 @@ test('pollAll aborts the remainder when the rate limit is hit', async () => {
     },
   }, { concurrency: 1 });
   for (const name of ['a', 'b', 'c', 'd']) {
-    store.upsertRepo({
+    await store.upsertRepo({
       fullName: `octo/${name}`, owner: 'octo', name, private: false, description: null, htmlUrl: null,
     }, '2026-09-01T00:00:00Z');
   }
@@ -124,7 +124,7 @@ test('pollAll refuses to run twice concurrently', async () => {
   let release;
   const gate = new Promise((r) => { release = r; });
   const { store, poller } = setup({ getClones: async () => { await gate; return { count: 0, uniques: 0, points: [] }; } });
-  store.upsertRepo({
+  await store.upsertRepo({
     fullName: 'octo/a', owner: 'octo', name: 'a', private: false, description: null, htmlUrl: null,
   }, '2026-09-01T00:00:00Z');
 
@@ -144,8 +144,8 @@ test('seedFromGitHub adds only repos with traffic access', async () => {
   });
   const result = await poller.seedFromGitHub();
   assert.deepEqual(result, { added: 1, skipped: 1, total: 2 });
-  assert.deepEqual(store.listRepos().map((r) => r.fullName), ['octo/yes']);
-  assert.equal(store.getMeta('seeded_at'), '2026-09-04T12:00:00.000Z');
+  assert.deepEqual((await store.listRepos()).map((r) => r.fullName), ['octo/yes']);
+  assert.equal(await store.getMeta('seeded_at'), '2026-09-04T12:00:00.000Z');
 });
 
 test('seedFromGitHub raises state.seeding for its duration, on every caller', async () => {
@@ -181,9 +181,9 @@ test('seedFromGitHub does not resurrect a repo the user untracked', async () => 
     ],
   });
   await poller.seedFromGitHub();
-  store.untrackRepo('octo/yes', '2026-09-04T13:00:00Z');
+  await store.untrackRepo('octo/yes', '2026-09-04T13:00:00Z');
   await poller.seedFromGitHub();
-  assert.equal(store.countTrackedRepos(), 0, 'a deliberate removal is respected');
+  assert.equal(await store.countTrackedRepos(), 0, 'a deliberate removal is respected');
 });
 
 test('bootstrap seeds then polls on an empty database', async () => {
@@ -196,16 +196,17 @@ test('bootstrap seeds then polls on an empty database', async () => {
   const result = await poller.bootstrap({ autoSeed: true });
   assert.equal(result.seeded.added, 1);
   assert.equal(result.polled.ok, 1);
-  assert.equal(store.dailySeries(store.getRepo('octo/yes').id, 'views')[0].count, 3);
+  const yesRepo = await store.getRepo('octo/yes');
+  assert.equal((await store.dailySeries(yesRepo.id, 'views'))[0].count, 3);
 });
 
 test('bootstrap skips the poll when nothing is stale', async () => {
   const { store, poller } = setup();
-  const repo = store.upsertRepo({
+  const repo = await store.upsertRepo({
     fullName: 'octo/a', owner: 'octo', name: 'a', private: false, description: null, htmlUrl: null,
   }, '2026-09-01T00:00:00Z');
-  store.markPolled(repo.id, { at: '2026-09-04T11:00:00Z' });
-  store.setMeta('seeded_at', '2026-09-01T00:00:00Z');
+  await store.markPolled(repo.id, { at: '2026-09-04T11:00:00Z' });
+  await store.setMeta('seeded_at', '2026-09-01T00:00:00Z');
 
   const result = await poller.bootstrap({ autoSeed: true });
   assert.equal(result.seeded, null, 'already seeded');
@@ -213,7 +214,7 @@ test('bootstrap skips the poll when nothing is stale', async () => {
 });
 
 test('a poller with no client reports that instead of crashing', async () => {
-  const store = new Store(openDatabase(':memory:'));
+  const store = new Store(createSqliteDriver(':memory:'));
   const poller = new Poller({ store, client: null, now: () => new Date('2026-09-04T12:00:00Z') });
   const result = await poller.bootstrap({ autoSeed: true });
   assert.equal(result.error, 'no_token');
@@ -222,7 +223,7 @@ test('a poller with no client reports that instead of crashing', async () => {
 
 test('a store failure during pollAll releases the running flag instead of wedging the poller', async () => {
   const { store, poller } = setup();
-  store.upsertRepo({
+  await store.upsertRepo({
     fullName: 'octo/a', owner: 'octo', name: 'a', private: false, description: null, htmlUrl: null,
   }, '2026-09-01T00:00:00Z');
 
@@ -242,10 +243,10 @@ test('a store failure during pollAll releases the running flag instead of wedgin
 
 test('bootstrap does not throw when the polling phase fails', async () => {
   const { store, poller } = setup();
-  store.upsertRepo({
+  await store.upsertRepo({
     fullName: 'octo/a', owner: 'octo', name: 'a', private: false, description: null, htmlUrl: null,
   }, '2026-09-01T00:00:00Z');
-  store.setMeta('seeded_at', '2026-09-01T00:00:00Z');
+  await store.setMeta('seeded_at', '2026-09-01T00:00:00Z');
   poller.pollAll = async () => { throw new Error('boom'); };
 
   const result = await poller.bootstrap({ autoSeed: true });

@@ -42,8 +42,8 @@ function dayRange(start, end) {
 // Walk `sinceDay` (or the repo's first day, whichever is later) through
 // today, zero-filling any day with no stored row so every chart shares an
 // evenly spaced x-axis. Returns empty arrays for a repo with no data at all.
-function denseSeries(store, repoId, sinceDay, now) {
-  const coverage = store.coverage(repoId);
+async function denseSeries(store, repoId, sinceDay, now) {
+  const coverage = await store.coverage(repoId);
   if (!coverage.firstDay) {
     return { days: [], clones: [], uniqueCloners: [], views: [], uniqueVisitors: [] };
   }
@@ -53,8 +53,8 @@ function denseSeries(store, repoId, sinceDay, now) {
     : coverage.firstDay;
   const days = dayRange(start, todayUtc(now));
 
-  const viewsMap = new Map(store.dailySeries(repoId, 'views', start).map((r) => [r.day, r]));
-  const clonesMap = new Map(store.dailySeries(repoId, 'clones', start).map((r) => [r.day, r]));
+  const viewsMap = new Map((await store.dailySeries(repoId, 'views', start)).map((r) => [r.day, r]));
+  const clonesMap = new Map((await store.dailySeries(repoId, 'clones', start)).map((r) => [r.day, r]));
 
   return {
     days,
@@ -113,7 +113,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
     // report "Updated never" after every restart, while sitting on months of
     // collected traffic.
     if (!poll.lastRunAt) {
-      const persisted = store.lastPollRun();
+      const persisted = await store.lastPollRun();
       if (persisted) {
         poll.lastRunAt = persisted.finishedAt ?? persisted.startedAt;
         poll.lastResult = {
@@ -131,10 +131,10 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
         login: tokenInfo?.login ?? null,
       },
       tokenError: tokenInfo?.error ?? null,
-      repoCount: store.countTrackedRepos(),
+      repoCount: await store.countTrackedRepos(),
       poll,
       pollIntervalHours: config.pollIntervalHours,
-      seededAt: store.getMeta('seeded_at'),
+      seededAt: await store.getMeta('seeded_at'),
       dataPath: config.dbPath,
     });
   });
@@ -142,7 +142,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
   router.get('/api/repos', async (req, res, ctx) => {
     const { range, sinceDay } = resolveRange(ctx.query.range, now());
     const sparkSinceDay = daysAgoUtc(now(), 29);
-    const summaries = store.repoSummaries({ sinceDay, sparkSinceDay });
+    const summaries = await store.repoSummaries({ sinceDay, sparkSinceDay });
     sendJson(res, 200, {
       range,
       sinceDay,
@@ -189,12 +189,11 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
       return;
     }
 
-    const repo = store.upsertRepo(normalised, now().toISOString());
+    const repo = await store.upsertRepo(normalised, now().toISOString());
     const poll = await poller.pollRepo(repo);
 
     const sparkSinceDay = daysAgoUtc(now(), 29);
-    const summary = store
-      .repoSummaries({ sinceDay: null, sparkSinceDay })
+    const summary = (await store.repoSummaries({ sinceDay: null, sparkSinceDay }))
       .find((r) => r.fullName === fullName);
 
     sendJson(res, 201, {
@@ -205,7 +204,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
 
   router.delete('/api/repos/:owner/:name', async (req, res, ctx) => {
     const fullName = `${ctx.params.owner}/${ctx.params.name}`;
-    const untracked = store.untrackRepo(fullName, now().toISOString());
+    const untracked = await store.untrackRepo(fullName, now().toISOString());
     if (!untracked) {
       sendError(res, 404, 'not_found', `${fullName} is not tracked`);
       return;
@@ -215,7 +214,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
 
   router.get('/api/repos/:owner/:name', async (req, res, ctx) => {
     const fullName = `${ctx.params.owner}/${ctx.params.name}`;
-    const repo = store.getRepo(fullName);
+    const repo = await store.getRepo(fullName);
     // An untracked repo keeps its row and its history (untracking is a soft
     // delete), but it is no longer part of the dashboard — so it reads as
     // absent here, exactly as one that was never added.
@@ -225,13 +224,13 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
     }
 
     const { range, sinceDay } = resolveRange(ctx.query.range, now());
-    const coverage = store.coverage(repo.id);
-    const totals = store.totals(repo.id, sinceDay);
-    const allTime = store.totals(repo.id, null);
-    const latestWindow = store.latestWindow(repo.id);
-    const series = denseSeries(store, repo.id, sinceDay, now());
-    const referrers = store.latestReferrers(repo.id, 20);
-    const paths = store.latestPaths(repo.id, 20);
+    const coverage = await store.coverage(repo.id);
+    const totals = await store.totals(repo.id, sinceDay);
+    const allTime = await store.totals(repo.id, null);
+    const latestWindow = await store.latestWindow(repo.id);
+    const series = await denseSeries(store, repo.id, sinceDay, now());
+    const referrers = await store.latestReferrers(repo.id, 20);
+    const paths = await store.latestPaths(repo.id, 20);
 
     sendJson(res, 200, {
       repo: {
@@ -281,7 +280,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
       availableReposCache = { at: now().getTime(), repos: remote };
     }
 
-    const tracked = new Set(store.listRepos().map((r) => r.fullName));
+    const tracked = new Set((await store.listRepos()).map((r) => r.fullName));
     sendJson(res, 200, {
       repos: remote.map((r) => ({ ...r, tracked: tracked.has(r.fullName) })),
     });

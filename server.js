@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 
 import { loadConfig } from './src/config.js';
 import { discoverToken } from './src/token.js';
-import { openDatabase } from './src/db.js';
+import { createSqliteDriver } from './src/db/sqlite.js';
 import { Store } from './src/store.js';
 import { GitHubClient } from './src/github.js';
 import { Poller } from './src/poller.js';
@@ -103,8 +103,8 @@ export function createShutdownHandler({ poller, server, store, exit = process.ex
     }
     shuttingDown = true;
     poller.stop();
-    server.close(() => {
-      store.close();
+    server.close(async () => {
+      await store.close();
       exit(0);
     });
     setTimeout(() => exit(0), forceMs).unref();
@@ -120,7 +120,7 @@ export async function main() {
   const { token, source } = await discoverToken();
   const tokenInfo = { token, source, login: null, error: null };
 
-  const store = new Store(openDatabase(config.dbPath));
+  const store = new Store(createSqliteDriver(config.dbPath));
   const client = token ? new GitHubClient({ token, baseUrl: config.apiBaseUrl }) : null;
   const poller = new Poller({ store, client, logger: console });
   poller.intervalHours = config.pollIntervalHours;
