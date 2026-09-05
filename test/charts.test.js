@@ -4,7 +4,7 @@ import {
   niceTicks, linearScale, buildLinePath, buildAreaPath,
   formatCount, formatFullCount, formatDayLabel, formatDayLong,
   pickDayTicks, nearestIndex, seriesColorVar, safeHref,
-} from '../public/charts.js';
+} from '../web/charts.js';
 
 test('importing the chart module does not require a DOM', () => {
   assert.equal(typeof globalThis.document, 'undefined');

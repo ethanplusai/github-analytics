@@ -1,4 +1,4 @@
-// public/views/manage.js
+// web/views/manage.js
 //
 // The inline repository-management panel — the UI half of "pick and choose
 // which of your repos to track". Not a modal: it renders into a container

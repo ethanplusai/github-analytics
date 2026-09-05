@@ -1,7 +1,7 @@
 // A complete, self-contained login page: no external stylesheet, no script,
 // no asset that lives behind the auth gate. Everything the page needs is
 // inlined here so it renders correctly even before the browser has a
-// session. Colour tokens are copied from public/styles.css to match the
+// session. Colour tokens are copied from web/styles.css to match the
 // rest of the app's look.
 function escapeHtml(value) {
   return String(value)

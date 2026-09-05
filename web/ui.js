@@ -1,4 +1,4 @@
-// public/ui.js
+// web/ui.js
 //
 // Pure DOM/data helpers shared by app.js and the views. `el` is the only
 // export that touches `document`; every other export is a pure function so

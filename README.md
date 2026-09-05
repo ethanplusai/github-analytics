@@ -119,4 +119,4 @@ No build step, and no install step for local use. `package.json` lists exactly o
 | `src/poller.js` | Seeding, the concurrency pool, the schedule |
 | `src/http.js` | Router, static files, the loopback guard |
 | `src/api.js` | The JSON API |
-| `public/` | The dashboard: `charts.js` (hand-rolled SVG), `views/`, `styles.css` |
+| `web/` | The dashboard: `charts.js` (hand-rolled SVG), `views/`, `styles.css` |

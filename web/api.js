@@ -1,4 +1,4 @@
-// public/api.js
+// web/api.js
 //
 // Typed fetch wrappers around the same-origin JSON API (see src/api.js on
 // the server). Every non-2xx response — and every network failure — comes
