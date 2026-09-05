@@ -1,0 +1,942 @@
+:root {
+  color-scheme: light;
+  --page:            #f9f9f7;
+  --surface-1:       #fcfcfb;
+  --surface-2:       #f2f1ed;
+  --text-primary:    #0b0b0b;
+  --text-secondary:  #52514e;   /* 7.73:1 — all secondary UI text */
+  --text-muted:      #898781;   /* 3.50:1 — chart axis ticks only */
+  --grid:            #e1e0d9;
+  --axis:            #c3c2b7;
+  --border:          rgba(11, 11, 11, 0.10);
+  --border-strong:   rgba(11, 11, 11, 0.20);
+  --series-1:        #2a78d6;
+  --series-2:        #eb6834;
+  --btn-bg:          #1c5cab;   /* white ink at 6.63:1 */
+  --btn-ink:         #ffffff;
+  --accent:          #2a78d6;
+  --good:            #006300;   /* 7.35:1 */
+  --critical:        #a11f1f;   /* 7.49:1 */
+  --warning-ink:     #8a6a00;   /* 4.94:1 */
+  --focus:           #2a78d6;
+  --radius:          10px;
+  --radius-sm:       6px;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface-1:      #1a1a19;
+    --surface-2:      #232321;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;  /* 9.72:1 */
+    --text-muted:     #898781;  /* 4.85:1 */
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255, 255, 255, 0.10);
+    --border-strong:  rgba(255, 255, 255, 0.22);
+    --series-1:       #3987e5;
+    --series-2:       #d95926;
+    --btn-bg:         #3987e5;  /* near-black ink at 5.34:1 */
+    --btn-ink:        #0d0d0d;
+    --accent:         #3987e5;
+    --good:           #0ca30c;  /* 5.19:1 */
+    --critical:       #e66767;  /* 5.39:1 */
+    --warning-ink:    #fab219;  /* 9.49:1 */
+    --focus:          #3987e5;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:           #0d0d0d;
+  --surface-1:      #1a1a19;
+  --surface-2:      #232321;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #898781;
+  --grid:           #2c2c2a;
+  --axis:           #383835;
+  --border:         rgba(255, 255, 255, 0.10);
+  --border-strong:  rgba(255, 255, 255, 0.22);
+  --series-1:       #3987e5;
+  --series-2:       #d95926;
+  --btn-bg:         #3987e5;
+  --btn-ink:        #0d0d0d;
+  --accent:         #3987e5;
+  --good:           #0ca30c;
+  --critical:       #e66767;
+  --warning-ink:    #fab219;
+  --focus:          #3987e5;
+}
+
+/* ---------------------------------------------------------------------
+   1. Reset & base
+   --------------------------------------------------------------------- */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body, h1, h2, h3, h4, p, figure, blockquote, dl, dd {
+  margin: 0;
+}
+
+body {
+  font-family: var(--sans);
+  background: var(--page);
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; }
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 8px;
+  z-index: 100;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  text-decoration: none;
+  transition: top .12s ease;
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   2. Topbar
+   --------------------------------------------------------------------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  height: 56px;
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+  z-index: 20;
+}
+
+.topbar__inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 24px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: -0.011em;
+  text-decoration: none;
+}
+
+.brand__mark rect { fill: var(--accent); }
+
+.topbar__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ---------------------------------------------------------------------
+   3. Buttons
+   --------------------------------------------------------------------- */
+
+.btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn--primary {
+  background: var(--btn-bg);
+  color: var(--btn-ink);
+  border-color: transparent;
+}
+
+.btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn--icon {
+  width: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.btn--xs {
+  height: 24px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.btn:hover { background: var(--surface-2); }
+.btn--primary:hover { filter: brightness(1.08); }
+.btn[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* ---------------------------------------------------------------------
+   4. Pill
+   --------------------------------------------------------------------- */
+
+.pill {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+.pill--busy {
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-size: var(--progress, 0%) 2px;
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+}
+
+/* ---------------------------------------------------------------------
+   5. Notices
+   --------------------------------------------------------------------- */
+
+.notice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  margin-bottom: 12px;
+}
+
+.notice--warn {
+  border-left-color: var(--warning-ink);
+}
+.notice--warn .notice__icon { color: var(--warning-ink); }
+
+.notice--error {
+  border-left-color: var(--critical);
+}
+.notice--error .notice__icon { color: var(--critical); }
+
+.notice__icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.notice__body {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.notice__close {
+  flex: none;
+}
+
+/* ---------------------------------------------------------------------
+   6. Layout
+   --------------------------------------------------------------------- */
+
+.app {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+
+.notices {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+@media (max-width: 640px) {
+  .topbar__inner, .app, .footer__inner, .notices {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+.footer {
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 20px 0;
+}
+
+.footer__inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ---------------------------------------------------------------------
+   7. Hero & stat tiles
+   --------------------------------------------------------------------- */
+
+.hero__value {
+  font-size: 48px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+
+.hero__label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* The 1px gap over a --border background is what draws the hairlines between
+   tiles. That means an incomplete final row shows as an empty grey cell — which
+   is exactly what three tiles in a two-column grid produce. Below the width
+   where a third column fits, drop to one column so a row is never partial. */
+@media (max-width: 560px) {
+  .stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stat {
+  background: var(--surface-1);
+  padding: 14px 16px;
+}
+
+.stat__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.stat__value {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* ---------------------------------------------------------------------
+   8. Controls row
+   --------------------------------------------------------------------- */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 24px 0 16px;
+}
+
+.segmented {
+  display: flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented button {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--surface-2);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.field {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+.controls__spacer {
+  margin-left: auto;
+}
+
+/* ---------------------------------------------------------------------
+   9. Repo grid & card
+   --------------------------------------------------------------------- */
+
+.repo-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
+.repo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  transition: border-color .12s ease, transform .12s ease;
+}
+
+.repo-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.repo-card__name {
+  font-family: var(--mono);
+  font-size: 13.5px;
+}
+
+.repo-card__owner { color: var(--text-secondary); }
+.repo-card__repo { color: var(--text-primary); font-weight: 600; }
+
+.repo-card__headrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.repo-card__stats {
+  display: flex;
+  gap: 20px;
+}
+
+.repo-card__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.repo-card__stat-value {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.repo-card__stat-sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.repo-card__desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2.6em;
+}
+
+.repo-card__spark { height: 34px; }
+
+.repo-card__foot {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.badge {
+  font-size: 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--text-secondary);
+}
+
+/* ---------------------------------------------------------------------
+   10. Charts
+   --------------------------------------------------------------------- */
+
+.chart {
+  margin: 0;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  position: relative;
+}
+
+.chart__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.chart__title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.chart__sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.chart__tools {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.legend {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.legend__key {
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.chart__tick {
+  font-size: 11px;
+  fill: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart__tip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 12px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.14);
+  z-index: 30;
+  min-width: 140px;
+}
+
+/* charts.js (Task 8) renders its legend/tooltip/empty-state markup under
+   these exact class names rather than the generic `.legend`/`.legend__key`
+   above; both are kept so renderTimeSeries/renderBarList (used by the repo
+   detail view) are already styled once that view exists. */
+.chart__plot { position: relative; }
+.chart__legend { display: flex; gap: 12px; font-size: 12px; color: var(--text-secondary); }
+.chart__legend-item { display: flex; align-items: center; }
+.chart__legend-key {
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  margin-right: 6px;
+}
+.chart__endlabel { font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart__empty { color: var(--text-secondary); font-size: 13px; padding: 24px 0; text-align: center; }
+.chart__tip-heading { font-weight: 600; margin-bottom: 4px; }
+.chart__tip-row { display: flex; align-items: center; gap: 6px; }
+.chart__tip-key { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.chart__tip-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+.chart__tip-label { color: var(--text-secondary); }
+
+/* ---------------------------------------------------------------------
+   11. Bar list
+   --------------------------------------------------------------------- */
+
+.barlist__row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.3fr) minmax(80px, 2fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 7px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.barlist__row:hover, .barlist__row:focus-visible {
+  background: var(--surface-2);
+}
+
+.bar-track {
+  background: var(--surface-2);
+  border-radius: 0 4px 4px 0;
+  height: 10px;
+}
+
+.bar {
+  height: 10px;
+  background: var(--series-1);
+  border-radius: 0 4px 4px 0;
+}
+
+.barlist__value {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.barlist__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+/* charts.js wraps each row's label in these two, for a referrer/path's
+   sublabel line (see the note above the `.chart__legend*` block). */
+.barlist { display: flex; flex-direction: column; }
+.barlist__label-col { display: flex; flex-direction: column; min-width: 0; }
+.barlist__sublabel { font-size: 11px; color: var(--text-secondary); }
+
+/* ---------------------------------------------------------------------
+   12. Data table
+   --------------------------------------------------------------------- */
+
+.datatable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.datatable th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.datatable td, .datatable th {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.datatable td:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.table-scroll {
+  max-height: 320px;
+  overflow: auto;
+}
+
+/* ---------------------------------------------------------------------
+   13. Empty & error states
+   --------------------------------------------------------------------- */
+
+.empty {
+  text-align: center;
+  padding: 56px 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+}
+
+.empty__title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.empty__body {
+  margin-bottom: 20px;
+}
+
+/* ---------------------------------------------------------------------
+   14. Utility
+   --------------------------------------------------------------------- */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mono { font-family: var(--mono); }
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--text-secondary); }
+.error-text { color: var(--critical); }
+
+.is-loading { opacity: .55; transition: opacity .15s ease; }
+
+/* ---------------------------------------------------------------------
+   15. Repository detail view (Task 10)
+   --------------------------------------------------------------------- */
+
+.detail__head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.detail__back {
+  align-self: flex-start;
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.detail__back:hover {
+  color: var(--text-primary);
+}
+
+.detail__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail__title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.detail__title {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail__owner {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.detail__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.detail__stop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail__desc {
+  font-size: 13px;
+  max-width: 68ch;
+}
+
+.detail__meta-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.detail__meta {
+  font-size: 13px;
+}
+
+.detail__footnote {
+  font-size: 12px;
+}
+
+.stat__sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.chart-stack {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin: 20px 0;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 720px) {
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   16. Manage-repositories panel (Task 11)
+
+   Inline and collapsible, not a modal: it renders in normal flow beneath
+   the controls row, so no `position: fixed`, no backdrop, no scroll lock.
+   --------------------------------------------------------------------- */
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel__title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.panel__body {
+  padding: 12px 16px;
+}
+
+.panel__counts {
+  font-size: 12px;
+  margin: 10px 0;
+}
+
+.panel__list {
+  max-height: 46vh;
+  overflow: auto;
+  margin: 0 -8px;
+}
+
+.panel__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+}
+
+.panel__row:hover {
+  background: var(--surface-2);
+}
+
+.panel__row-info {
+  min-width: 0;
+}
+
+.panel__row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel__desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel__row-meta {
+  font-size: 12px;
+}
+
+.panel__row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel__row-error {
+  grid-column: 1 / -1;
+}
+
+.panel__add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}

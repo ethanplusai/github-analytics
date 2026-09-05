@@ -1,0 +1,16 @@
+{
+  "name": "github-analytics",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Persistent GitHub traffic analytics dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning bin/start.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch bin/start.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
