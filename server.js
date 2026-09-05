@@ -16,7 +16,7 @@ import { createAuth } from './src/auth.js';
 import { renderLoginPage } from './src/login-page.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = join(HERE, 'public');
+const PUBLIC_DIR = join(HERE, 'web');
 
 // Fixed delay after a failed login, in milliseconds. Serverless instances
 // share no memory, so there is no rate limiter to lean on here — this
@@ -285,7 +285,14 @@ export async function createDriverFromConfig(config) {
   return createSqliteDriver(config.dbPath);
 }
 
-export async function main() {
+// Every bit of wiring that turns a bare config into a runnable app: load the
+// config, discover a token, stand up the store and poller, and hand it all
+// to createApp for a requestListener. Shared verbatim by main() (the local,
+// long-lived process) and the default export below (the Vercel Function
+// entrypoint) so the two paths cannot drift apart. Startup refusals run
+// synchronously, before the first `await`, so a rejection here always means
+// "never built a listener" — never a half-wired app.
+export async function buildApp() {
   const config = loadConfig();
   const auth = createAuth({ passphrase: config.password });
   assertSafeToStart(config, auth);
@@ -302,6 +309,14 @@ export async function main() {
 
   const { requestListener } = createApp({ config, tokenInfo, client, store, poller, version, auth });
 
+  return { config, auth, version, tokenInfo, store, client, poller, requestListener };
+}
+
+export async function main() {
+  const {
+    config, tokenInfo, store, client, poller, requestListener,
+  } = await buildApp();
+
   const server = createServer(requestListener);
   let boundPort;
   if (config.serverless) {
@@ -317,8 +332,8 @@ export async function main() {
   const dataLabel = config.postgresUrl ? 'neon postgres' : config.dbPath;
   const lines = ['  GitHub Analytics'];
   if (url) lines.push(`  → ${url}`);
-  if (token) {
-    lines.push(`  token: ${source}   ·   data: ${dataLabel}`);
+  if (tokenInfo.token) {
+    lines.push(`  token: ${tokenInfo.source}   ·   data: ${dataLabel}`);
     lines.push('  Collecting traffic in the background. Press Ctrl+C to stop.');
   } else {
     lines.push("  token: none found — run 'gh auth login' or set GITHUB_TOKEN, then restart");
@@ -343,8 +358,44 @@ export async function main() {
   }
 }
 
+// The Vercel Function entrypoint. Vercel builds this module expecting a
+// default export shaped `(req, res) => ...` — declaring `"functions":
+// { "server.js": {...} }` in vercel.json (needed for maxDuration and
+// includeFiles) opts this file into that contract, so it must actually
+// satisfy it: no top-level `listen()`, and a default export that is a
+// function.
+//
+// `appPromise` is cached at module scope — the module stays loaded across
+// invocations on a warm instance — so the app is wired up once per instance
+// and every request after the first reuses it, rather than each request
+// opening its own store and driver. Concurrent first requests share the
+// same in-flight promise for the same reason.
+//
+// A failed build must not poison the instance forever: resetting
+// `appPromise` to null in the catch means the NEXT request tries again from
+// scratch, rather than every future request replaying the same rejection.
+let appPromise = null;
+
+export default async function handler(req, res) {
+  appPromise ??= buildApp();
+  let app;
+  try {
+    app = await appPromise;
+  } catch (err) {
+    appPromise = null;
+    console.error('[vercel] failed to initialize app:', err.message);
+    if (!res.headersSent) {
+      sendError(res, 500, 'internal_error', err.message);
+    } else {
+      res.end();
+    }
+    return;
+  }
+  return app.requestListener(req, res);
+}
+
 const invokedDirectly = process.argv[1] && /(^|[\\/])(server\.js|start\.js)$/.test(process.argv[1]);
-if (invokedDirectly || process.env.VERCEL) {
+if (invokedDirectly) {
   main().catch((err) => {
     console.error(`\n  GitHub Analytics could not start: ${err.message}\n`);
     process.exit(1);

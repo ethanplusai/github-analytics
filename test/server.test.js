@@ -591,3 +591,110 @@ test('FIX 2: the short-passphrase refusal explains both lengthening AND unsettin
     },
   );
 });
+
+// ---------------------------------------------------------------------
+// Vercel deployment fix: server.js must export a default `(req, res)`
+// handler, build the app lazily and only once per instance, and never
+// cache a failed build. These tests mutate real `process.env` (rather than
+// passing an env object to loadConfig, like the tests above) because
+// buildApp() itself reads `process.env` directly — that's exactly what the
+// deployed Vercel Function does. Each test restores whatever it changed,
+// and each imports server.js through a uniquely-querystringed specifier so
+// its own module-scoped `appPromise` cache starts fresh rather than
+// inheriting state some other test in this file already warmed up.
+// ---------------------------------------------------------------------
+
+async function withProcessEnv(overrides, fn) {
+  const keys = Object.keys(overrides);
+  const previous = {};
+  for (const key of keys) previous[key] = process.env[key];
+  for (const key of keys) {
+    if (overrides[key] === undefined) delete process.env[key];
+    else process.env[key] = overrides[key];
+  }
+  try {
+    await fn();
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+}
+
+async function freshHandler(tag) {
+  const mod = await import(`../server.js?${tag}-${Date.now()}-${Math.random()}`);
+  return mod.default;
+}
+
+test('the default export is a function', async () => {
+  const handler = await freshHandler('is-a-function');
+  assert.equal(typeof handler, 'function');
+});
+
+test('calling the default export twice builds the app only once', async (t) => {
+  const { createSqliteDriver: realCreateSqliteDriver } = await import('../src/db/sqlite.js');
+  let driverCalls = 0;
+  t.mock.module('../src/db/sqlite.js', {
+    namedExports: {
+      createSqliteDriver: (...args) => {
+        driverCalls += 1;
+        return realCreateSqliteDriver(...args);
+      },
+    },
+  });
+
+  await withProcessEnv({
+    VERCEL: '1',
+    GHA_ALLOW_PUBLIC: '1',
+    GHA_PASSWORD: undefined,
+    GHA_ALLOWED_HOSTS: undefined,
+    GHA_DB_PATH: ':memory:',
+    GITHUB_TOKEN: 'test-token',
+  }, async () => {
+    const handler = await freshHandler('builds-once');
+    const server = createServer((req, res) => { handler(req, res); });
+    const port = await listenWithFallback(server, { host: '127.0.0.1', port: 0 });
+    try {
+      const res1 = await fetch(`http://127.0.0.1:${port}/api/health`);
+      assert.equal(res1.status, 200);
+      const res2 = await fetch(`http://127.0.0.1:${port}/api/health`);
+      assert.equal(res2.status, 200);
+      assert.equal(driverCalls, 1, 'the sqlite driver should be constructed once, not once per request');
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+});
+
+test('a failed build is not cached: the next call retries rather than replaying the rejection', async () => {
+  await withProcessEnv({
+    GHA_ALLOWED_HOSTS: 'analytics.example.com',
+    GHA_PASSWORD: 'too-short',
+    GHA_DB_PATH: ':memory:',
+    GITHUB_TOKEN: 'test-token',
+    VERCEL: undefined,
+  }, async () => {
+    const handler = await freshHandler('failed-build');
+    const server = createServer((req, res) => { handler(req, res); });
+    const port = await listenWithFallback(server, { host: '127.0.0.1', port: 0 });
+    try {
+      const failing = await fetch(`http://127.0.0.1:${port}/api/health`);
+      assert.equal(failing.status, 500, 'a short passphrase behind GHA_ALLOWED_HOSTS must refuse to start');
+      const failingBody = await failing.json();
+      assert.equal(failingBody.error.code, 'internal_error');
+
+      // Fix the environment the way an operator would (unset the offending
+      // vars) and confirm the NEXT call retries the build rather than
+      // replaying the cached rejection forever.
+      delete process.env.GHA_ALLOWED_HOSTS;
+      delete process.env.GHA_PASSWORD;
+
+      const recovered = await fetch(`http://127.0.0.1:${port}/api/health`);
+      assert.equal(recovered.status, 200, 'a fresh build with the fixed environment must succeed');
+      assert.deepEqual(await recovered.json(), { ok: true });
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+});
