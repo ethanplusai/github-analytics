@@ -96,6 +96,34 @@ function densifySummary(summary, sparkSinceDay, now) {
   return { ...summary, spark: densifySpark(summary.spark, sparkSinceDay, now) };
 }
 
+// Shape a repo_metrics_daily series into the parallel-arrays form the charts
+// already consume, mirroring how `series` is built in denseSeries. Unlike
+// traffic, metrics rows are not zero-filled: a missing day means no poll or
+// backfill ever ran for it, and there's no honest zero to fill it with.
+function metricsFrom(rows) {
+  return {
+    days: rows.map((r) => r.day),
+    stars: rows.map((r) => r.stars),
+    forks: rows.map((r) => r.forks),
+    watchers: rows.map((r) => r.watchers),
+    // The first day a watcher figure exists — everything before it is history
+    // GitHub does not publish, so the UI must say so rather than plot a zero.
+    watchersFrom: rows.find((r) => r.watchers != null)?.day ?? null,
+  };
+}
+
+// Plain arithmetic, deliberately not a judgement: a high ratio means one actor
+// cloned repeatedly, which is what CI and deploy systems do. GitHub never tells
+// us who cloned, so the dashboard reports the number and explains it rather
+// than classifying the repo.
+function cloneRatio({ clones, uniqueCloners }) {
+  return {
+    clones,
+    uniqueCloners,
+    ratio: uniqueCloners > 0 ? Number((clones / uniqueCloners).toFixed(1)) : null,
+  };
+}
+
 function mapGitHubError(err) {
   switch (err.kind) {
     case 'auth': return { status: 401, code: 'bad_token' };
@@ -163,7 +191,10 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
       range,
       sinceDay,
       generatedAt: now().toISOString(),
-      repos: summaries.map((s) => densifySummary(s, sparkSinceDay, now())),
+      repos: summaries.map((s) => ({
+        ...densifySummary(s, sparkSinceDay, now()),
+        cloneRatio: cloneRatio(s.range),
+      })),
     });
   });
 
@@ -245,6 +276,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
     const allTime = await store.totals(repo.id, null);
     const latestWindow = await store.latestWindow(repo.id);
     const series = await denseSeries(store, repo.id, sinceDay, now());
+    const metrics = metricsFrom(await store.metricsSeries(repo.id, sinceDay));
     const referrers = await store.latestReferrers(repo.id, 20);
     const paths = await store.latestPaths(repo.id, 20);
 
@@ -268,6 +300,8 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
       allTime,
       latestWindow,
       series,
+      metrics,
+      cloneRatio: cloneRatio(totals),
       referrers,
       paths,
     });

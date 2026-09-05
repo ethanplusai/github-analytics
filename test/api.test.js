@@ -225,6 +225,86 @@ test('the detail series for range=all starts at the first recorded day', async (
   });
 });
 
+test('repo detail includes a metrics series and says where watchers begin', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      // A backfilled day: no watcher figure exists for it.
+      await store.recordRepoMetrics(repo.id, '2026-09-03', { stars: 10, forks: 2, watchers: null }, '2026-09-03T00:00:00Z');
+      // A polled day: a real watcher figure.
+      await store.recordRepoMetrics(repo.id, '2026-09-04', { stars: 12, forks: 3, watchers: 5 }, '2026-09-04T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=all`)).json();
+    assert.deepEqual(body.metrics.days, ['2026-09-03', '2026-09-04']);
+    assert.deepEqual(body.metrics.stars, [10, 12]);
+    assert.deepEqual(body.metrics.forks, [2, 3]);
+    assert.deepEqual(body.metrics.watchers, [null, 5]);
+    // The first day a watcher figure exists — everything before it is history
+    // GitHub does not publish, and the UI must say so rather than plot a zero.
+    assert.equal(body.metrics.watchersFrom, '2026-09-04');
+  });
+});
+
+test('watchersFrom is null when no watcher figure has ever been recorded', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      await store.recordRepoMetrics(repo.id, '2026-09-03', { stars: 1, forks: 0, watchers: null }, '2026-09-03T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=all`)).json();
+    assert.equal(body.metrics.watchersFrom, null);
+  });
+});
+
+test('cloneRatio is clones divided by unique cloners for the range', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      await store.ingestTrafficSeries(repo.id, 'clones', [
+        { timestamp: '2026-09-03T00:00:00Z', count: 100, uniques: 2 },
+      ], '2026-09-03T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=all`)).json();
+    assert.equal(body.cloneRatio.clones, 100);
+    assert.equal(body.cloneRatio.uniqueCloners, 2);
+    assert.equal(body.cloneRatio.ratio, 50);
+  });
+});
+
+test('cloneRatio is null rather than Infinity when nobody cloned', async () => {
+  await withApi({
+    // Not seedRepo: it always ingests a clones row, which would give a real
+    // (non-null) ratio. This repo has no traffic rows at all.
+    storeSetup: async (store) => {
+      await store.upsertRepo({
+        fullName: 'octo/hello', owner: 'octo', name: 'hello', private: false, description: null, htmlUrl: null,
+      }, '2026-09-04T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=all`)).json();
+    assert.equal(body.cloneRatio.ratio, null);
+    // Not NaN, not Infinity — both would render as garbage in the UI.
+    assert.equal(Number.isFinite(body.cloneRatio.ratio), false);
+  });
+});
+
+test('the home list carries a cloneRatio per repo', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      await store.ingestTrafficSeries(repo.id, 'clones', [
+        { timestamp: '2026-09-03T00:00:00Z', count: 9, uniques: 3 },
+      ], '2026-09-03T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos`)).json();
+    assert.equal(body.repos[0].cloneRatio.ratio, 3);
+  });
+});
+
 test('a repo with no data yet returns empty arrays, not an error', async () => {
   await withApi({
     storeSetup: (s) => s.upsertRepo({
