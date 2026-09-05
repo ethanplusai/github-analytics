@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toDollarPlaceholders, coerceRow } from '../src/db/postgres.js';
+import { toDollarPlaceholders, coerceRow, createPostgresDriver } from '../src/db/postgres.js';
 
 test('rewrites ? to $n in order', () => {
   assert.equal(
@@ -38,4 +38,21 @@ test('coerces int8 and numeric columns to numbers', () => {
 test('leaves nulls null rather than coercing to zero', () => {
   const fields = [{ name: 'c', dataTypeID: 20 }];
   assert.deepEqual(coerceRow({ c: null }, fields), { c: null });
+});
+
+// Regression: neon() embeds the entire connection string — password
+// included — in its own error message when the string is malformed, and
+// that message reaches the process log verbatim on a startup failure. The
+// driver must redact it.
+test('a malformed POSTGRES_URL produces an error that does not contain the string that was passed in', async () => {
+  const badUrl = 'postgres://someuser:super-secret-password@bad host/db';
+  await assert.rejects(
+    () => createPostgresDriver(badUrl),
+    (err) => {
+      assert.ok(!err.message.includes(badUrl), 'the raw connection string must not appear in the error');
+      assert.ok(!err.message.includes('super-secret-password'), 'the password must not appear in the error');
+      assert.match(err.message, /POSTGRES_URL/);
+      return true;
+    },
+  );
 });

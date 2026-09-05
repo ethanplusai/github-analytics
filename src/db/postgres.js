@@ -35,7 +35,21 @@ export function coerceRow(row, fields) {
 
 export async function createPostgresDriver(connectionString) {
   const { neon } = await import('@neondatabase/serverless');
-  const sql = neon(connectionString, { fullResults: true });
+
+  // `neon()` throws with the entire connection string — password included —
+  // embedded in its error message when it's malformed. On Vercel that
+  // message reaches the function log verbatim (server.js prints
+  // `err.message` on a startup failure), so it's caught here and replaced
+  // with a message that names the problem without repeating the value.
+  let sql;
+  try {
+    sql = neon(connectionString, { fullResults: true });
+  } catch {
+    throw new Error(
+      'POSTGRES_URL (or DATABASE_URL) is not a valid Postgres connection string. ' +
+      'Its value is intentionally omitted from this message.',
+    );
+  }
 
   const exec = async (text, params = []) => {
     const result = await sql.query(toDollarPlaceholders(text), params);
