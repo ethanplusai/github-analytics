@@ -21,8 +21,18 @@ export function createSqliteDriver(dbPath) {
   // Postgres spells the two-argument maximum GREATEST(a, b); SQLite spells it
   // max(a, b) and has no GREATEST. The store's SQL is written once, in the
   // Postgres spelling, and SQLite learns the name here — which is what keeps
-  // the monotonic traffic upsert byte-identical on both engines.
-  db.function('greatest', (a, b) => (a > b ? a : b));
+  // the monotonic traffic upsert byte-identical on both engines. The NULL
+  // handling deliberately mirrors Postgres's GREATEST, which ignores NULL
+  // arguments and only returns NULL when every argument is NULL — not
+  // SQLite's native max(), which returns NULL if any argument is NULL. A
+  // plain `a > b ? a : b` also gets this wrong on its own terms: JS coerces
+  // null to 0 for the comparison, so greatest(null, -5) would wrongly pick
+  // the null branch instead of -5.
+  db.function('greatest', (a, b) => {
+    if (a === null || a === undefined) return b ?? null;
+    if (b === null || b === undefined) return a;
+    return a > b ? a : b;
+  });
 
   if (dbPath !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');

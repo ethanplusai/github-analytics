@@ -37,3 +37,35 @@ test('transaction returns RETURNING rows per statement', async () => {
   assert.equal(results[0][0].id, 1);
   await d.close();
 });
+
+test('greatest() with NULL and a negative number ignores the NULL, in both orders', async () => {
+  const d = createSqliteDriver(':memory:');
+  assert.equal((await d.query('SELECT greatest(NULL, -5) AS v', []))[0].v, -5);
+  assert.equal((await d.query('SELECT greatest(-5, NULL) AS v', []))[0].v, -5);
+  await d.close();
+});
+
+test('greatest() with NULL and a positive number ignores the NULL, in both orders', async () => {
+  const d = createSqliteDriver(':memory:');
+  assert.equal((await d.query('SELECT greatest(NULL, 5) AS v', []))[0].v, 5);
+  assert.equal((await d.query('SELECT greatest(5, NULL) AS v', []))[0].v, 5);
+  await d.close();
+});
+
+test('greatest(null, null) is null', async () => {
+  const d = createSqliteDriver(':memory:');
+  assert.equal((await d.query('SELECT greatest(NULL, NULL) AS v', []))[0].v, null);
+  await d.close();
+});
+
+test('greatest() with a tie returns that value', async () => {
+  const d = createSqliteDriver(':memory:');
+  assert.equal((await d.query('SELECT greatest(4, 4) AS v', []))[0].v, 4);
+  await d.close();
+});
+
+test('greatest() with two negative numbers returns the one closer to zero', async () => {
+  const d = createSqliteDriver(':memory:');
+  assert.equal((await d.query('SELECT greatest(-3, -9) AS v', []))[0].v, -3);
+  await d.close();
+});
