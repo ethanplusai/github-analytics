@@ -42,5 +42,7 @@ export function loadConfig(env = process.env) {
     // TTL instead of being released promptly.
     pollDeadlineMs: num(env.GHA_POLL_DEADLINE_MS, DEFAULT_POLL_DEADLINE_MS),
     allowedHosts: (env.GHA_ALLOWED_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    password: env.GHA_PASSWORD || null,
+    allowPublic: bool(env.GHA_ALLOW_PUBLIC, false),
   };
 }

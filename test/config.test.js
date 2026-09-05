@@ -63,3 +63,15 @@ test('pollDeadlineMs defaults to 45s and is overridable, so it can never silentl
   assert.equal(loadConfig({ GHA_POLL_DEADLINE_MS: '120000' }).pollDeadlineMs, 120000);
   assert.equal(loadConfig({ GHA_POLL_DEADLINE_MS: 'not-a-number' }).pollDeadlineMs, 45000);
 });
+
+test('the passphrase and the public override are read from the environment', () => {
+  const cfg = loadConfig({ GHA_PASSWORD: 'secret', GHA_ALLOW_PUBLIC: '1' });
+  assert.equal(cfg.password, 'secret');
+  assert.equal(cfg.allowPublic, true);
+});
+
+test('there is no password and no public override by default', () => {
+  const cfg = loadConfig({});
+  assert.equal(cfg.password, null);
+  assert.equal(cfg.allowPublic, false);
+});

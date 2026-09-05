@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createApp, listenWithFallback, createShutdownHandler, createDriverFromConfig, bannerUrl } from '../server.js';
+import { createApp, listenWithFallback, createShutdownHandler, createDriverFromConfig, bannerUrl, assertSafeToStart } from '../server.js';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
 import { Poller } from '../src/poller.js';
+import { createAuth } from '../src/auth.js';
 
 const CONFIG = {
   dataDir: '/tmp/gha-test', dbPath: ':memory:', host: '127.0.0.1', port: 0,
@@ -12,11 +13,21 @@ const CONFIG = {
   apiBaseUrl: 'https://api.github.com', allowedHosts: [],
 };
 
-async function withApp(fn, { client = null, tokenInfo = { token: 't', source: 'test', login: 'octo' } } = {}) {
+// A no-op sleep so tests exercising the failed-login path don't pay the real
+// fixed delay.
+const NO_SLEEP = () => Promise.resolve();
+
+async function withApp(fn, {
+  client = null,
+  tokenInfo = { token: 't', source: 'test', login: 'octo' },
+  auth,
+  sleep,
+  config: configOverrides = {},
+} = {}) {
   const store = new Store(createSqliteDriver(':memory:'));
   const poller = new Poller({ store, client, now: () => new Date('2026-09-04T12:00:00Z') });
   const { requestListener } = createApp({
-    config: CONFIG, tokenInfo, client, store, poller, version: '1.0.0',
+    config: { ...CONFIG, ...configOverrides }, tokenInfo, client, store, poller, version: '1.0.0', auth, sleep,
   });
   const server = createServer(requestListener);
   const port = await listenWithFallback(server, { host: '127.0.0.1', port: 0 });
@@ -194,4 +205,182 @@ test('no HTML in the app declares a modal dialog', async () => {
     assert.doesNotMatch(html, /<dialog/i);
     assert.doesNotMatch(html, /role="dialog"/i);
   });
+});
+
+// ---------------------------------------------------------------------
+// Auth gate
+// ---------------------------------------------------------------------
+
+const AUTH_ON = createAuth({ passphrase: 'a-long-test-passphrase-1234567890' });
+
+test('with auth enabled, an unauthenticated API request is refused with 401 JSON', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/api/status`);
+    assert.equal(res.status, 401);
+    assert.match(res.headers.get('content-type'), /application\/json/);
+    const body = await res.json();
+    assert.equal(body.error.code, 'unauthorized');
+  }, { auth: AUTH_ON });
+});
+
+test('with auth enabled, an unauthenticated page request redirects to /login', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/`, { redirect: 'manual' });
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get('location'), '/login');
+  }, { auth: AUTH_ON });
+});
+
+test('with auth enabled, the dashboard HTML is NOT served without a cookie', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/`, { redirect: 'manual' });
+    const body = await res.text();
+    assert.doesNotMatch(body, /id="app-root"/);
+  }, { auth: AUTH_ON });
+});
+
+test('GET /api/poll bypasses the session gate (cron has no cookie)', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer shh' } });
+    assert.notEqual(res.status, 401);
+    assert.notEqual(res.status, 303);
+  }, { auth: AUTH_ON, config: { cronSecret: 'shh' } });
+});
+
+test('POST /api/poll (no bearer secret) IS gated when auth is enabled', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/api/poll`, { method: 'POST' });
+    assert.equal(res.status, 401);
+    const body = await res.json();
+    assert.equal(body.error.code, 'unauthorized');
+  }, { auth: AUTH_ON, config: { cronSecret: 'shh' } });
+});
+
+test('GET /login serves the login page when auth is enabled', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/login`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/html/);
+    const html = await res.text();
+    assert.match(html, /name="password"/);
+    assert.match(html, /action="\/login"/);
+  }, { auth: AUTH_ON });
+});
+
+test('POST /login with the wrong passphrase does not set a cookie', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/login`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=nope',
+    });
+    assert.notEqual(res.status, 303);
+    assert.equal(res.headers.getSetCookie().length, 0);
+  }, { auth: AUTH_ON, sleep: NO_SLEEP });
+});
+
+test('POST /login with the right passphrase sets the cookie and redirects to /', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/login`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=a-long-test-passphrase-1234567890',
+    });
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get('location'), '/');
+    const cookies = res.headers.getSetCookie();
+    assert.equal(cookies.length, 1);
+    assert.match(cookies[0], /HttpOnly/);
+  }, { auth: AUTH_ON, sleep: NO_SLEEP });
+});
+
+test('a valid session cookie reaches the dashboard and the API', async () => {
+  await withApp(async (base) => {
+    const login = await fetch(`${base}/login`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=a-long-test-passphrase-1234567890',
+    });
+    const cookie = login.headers.getSetCookie()[0].split(';')[0];
+
+    const page = await fetch(`${base}/`, { headers: { cookie } });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /id="app-root"/);
+
+    const api = await fetch(`${base}/api/status`, { headers: { cookie } });
+    assert.equal(api.status, 200);
+  }, { auth: AUTH_ON, sleep: NO_SLEEP });
+});
+
+test('POST /logout clears the cookie', async () => {
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/logout`, { method: 'POST', redirect: 'manual' });
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get('location'), '/login');
+    const cookies = res.headers.getSetCookie();
+    assert.equal(cookies.length, 1);
+    assert.match(cookies[0], /Max-Age=0/);
+  }, { auth: AUTH_ON });
+});
+
+test('with auth DISABLED the request path is unchanged', async () => {
+  await withApp(async (base) => {
+    const status = await fetch(`${base}/api/status`);
+    assert.equal(status.status, 200);
+    const login = await fetch(`${base}/login`);
+    assert.equal(login.status, 404);
+  });
+});
+
+test('a session cookie with the wrong name for the mode (plain cookie while serverless) is refused', async () => {
+  await withApp(async (base) => {
+    // Issue a plain-name cookie directly from the auth module (bypassing the
+    // server's own login route, which would always pick the right name for
+    // the mode) to prove the server actually threads `{ secure }` into
+    // isAuthenticated rather than relying on its permissive default.
+    const cookie = AUTH_ON.issueCookie({ secure: false }).split(';')[0];
+    const res = await fetch(`${base}/api/status`, { headers: { cookie }, redirect: 'manual' });
+    assert.equal(res.status, 401);
+  }, { auth: AUTH_ON, config: { serverless: true } });
+});
+
+test('startup refuses a short passphrase in serverless mode, so entropy stands in for rate limiting', () => {
+  const shortAuth = createAuth({ passphrase: 'too-short' });
+  assert.throws(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: 'too-short', allowPublic: false }, shortAuth),
+    /20 characters/,
+  );
+});
+
+test('startup does not refuse a long passphrase in serverless mode', () => {
+  const longPass = 'a-long-test-passphrase-1234567890';
+  const longAuth = createAuth({ passphrase: longPass });
+  assert.doesNotThrow(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: longPass, allowPublic: false }, longAuth),
+  );
+});
+
+test('startup refuses a public serverless deployment with no passphrase', () => {
+  const off = createAuth({ passphrase: null });
+  assert.throws(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: null, allowPublic: false }, off),
+    /GHA_PASSWORD/,
+  );
+});
+
+test('startup does not refuse locally with no passphrase', () => {
+  const off = createAuth({ passphrase: null });
+  assert.doesNotThrow(
+    () => assertSafeToStart({ ...CONFIG, serverless: false, password: null, allowPublic: false }, off),
+  );
+});
+
+test('startup does not refuse a public serverless deployment when explicitly allowed', () => {
+  const off = createAuth({ passphrase: null });
+  assert.doesNotThrow(
+    () => assertSafeToStart({ ...CONFIG, serverless: true, password: null, allowPublic: true }, off),
+  );
 });

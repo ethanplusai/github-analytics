@@ -12,11 +12,69 @@ import { GitHubClient } from './src/github.js';
 import { Poller } from './src/poller.js';
 import { createApi } from './src/api.js';
 import { createStaticHandler, isRequestLocal, sendError } from './src/http.js';
+import { createAuth } from './src/auth.js';
+import { renderLoginPage } from './src/login-page.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, 'public');
 
-export function createApp({ config, tokenInfo, client, store, poller, version }) {
+// Fixed delay after a failed login, in milliseconds. Serverless instances
+// share no memory, so there is no rate limiter to lean on here — this
+// constant-time penalty is the only thing that costs an online attacker
+// anything per guess. Injectable via `sleep` so tests don't have to pay it.
+const FAILED_LOGIN_DELAY_MS = 400;
+
+function defaultSleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+// Read a `application/x-www-form-urlencoded` body, bounded the same way
+// `readJsonBody` in src/http.js bounds a JSON body: accumulate, reject past
+// a size limit, destroy the socket rather than keep buffering. Kept local to
+// server.js (rather than added to http.js) because it's login-form-specific
+// and this task isn't touching http.js.
+function readFormBody(req, { limit = 1_000_000 } = {}) {
+  return new Promise((resolvePromise, reject) => {
+    const chunks = [];
+    let length = 0;
+    let settled = false;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
+    req.on('data', (chunk) => {
+      if (settled) return;
+      length += chunk.length;
+      if (length > limit) {
+        const err = new Error('Request body too large');
+        err.code = 'TOO_LARGE';
+        setImmediate(() => req.destroy());
+        fail(err);
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('error', (err) => {
+      fail(err);
+    });
+
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(new URLSearchParams(Buffer.concat(chunks).toString('utf8')));
+    });
+  });
+}
+
+export function createApp({
+  config, tokenInfo, client, store, poller, version,
+  auth = createAuth({ passphrase: null }),
+  sleep = defaultSleep,
+}) {
   const api = createApi({ store, poller, client, tokenInfo, config, version });
   const serveStatic = createStaticHandler({ root: PUBLIC_DIR });
 
@@ -26,6 +84,66 @@ export function createApp({ config, tokenInfo, client, store, poller, version })
         sendError(res, 403, 'forbidden_host', 'This server only accepts requests from the local machine.');
         return;
       }
+
+      if (auth.enabled) {
+        const secure = Boolean(config.serverless);
+        const url = new URL(req.url, 'http://localhost');
+
+        if (url.pathname === '/login') {
+          if (req.method === 'GET') {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+            res.end(renderLoginPage({}));
+            return;
+          }
+          if (req.method === 'POST') {
+            let params;
+            try {
+              params = await readFormBody(req);
+            } catch (err) {
+              const code = err.code === 'TOO_LARGE' ? 'too_large' : 'bad_request';
+              sendError(res, err.code === 'TOO_LARGE' ? 413 : 400, code, err.message);
+              return;
+            }
+            const candidate = params.get('password') ?? '';
+            if (auth.checkPassphrase(candidate)) {
+              res.writeHead(303, { location: '/', 'set-cookie': auth.issueCookie({ secure }) });
+              res.end();
+            } else {
+              await sleep(FAILED_LOGIN_DELAY_MS);
+              res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' });
+              res.end(renderLoginPage({ error: 'Incorrect passphrase.' }));
+            }
+            return;
+          }
+          sendError(res, 404, 'not_found', 'Not found.');
+          return;
+        }
+
+        if (url.pathname === '/logout' && req.method === 'POST') {
+          res.writeHead(303, { location: '/login', 'set-cookie': auth.clearCookie({ secure }) });
+          res.end();
+          return;
+        }
+
+        // Vercel Cron sends no cookie — it authenticates GET /api/poll with
+        // its own bearer secret, which src/api.js already checks. Sending
+        // cron a 303 to /login would silently stop polling forever, so this
+        // one route is exempt from the session gate. Only the GET: a POST
+        // to /api/poll carries no secret check of its own in src/api.js, so
+        // it must still go through this gate.
+        const isCron = req.method === 'GET' && url.pathname === '/api/poll';
+
+        if (!isCron && !auth.isAuthenticated(req, { secure })) {
+          if (url.pathname.startsWith('/api/')) {
+            sendError(res, 401, 'unauthorized', 'Sign in to use this API.');
+          } else {
+            res.writeHead(303, { location: '/login' });
+            res.end();
+          }
+          return;
+        }
+      }
+
       if (await api.handle(req, res)) return;
       if (req.url.startsWith('/api/')) {
         sendError(res, 404, 'not_found', 'Unknown API route.');
@@ -44,6 +162,26 @@ export function createApp({ config, tokenInfo, client, store, poller, version })
   }
 
   return { requestListener, router: api, serveStatic };
+}
+
+// Two startup refusals, kept as a standalone function so they're testable
+// without spinning up the whole process. Both name the exact env vars an
+// operator needs to set.
+export function assertSafeToStart(config, auth) {
+  if (config.serverless && !auth.enabled && !config.allowPublic) {
+    throw new Error(
+      'Refusing to start: this deployment would be public and has no passphrase. '
+      + 'Set GHA_PASSWORD, or set GHA_ALLOW_PUBLIC=1 if you really intend a public dashboard.',
+    );
+  }
+  if (config.serverless && auth.enabled && config.password.length < 20) {
+    throw new Error(
+      'Refusing to start: GHA_PASSWORD is shorter than 20 characters. This is deliberate: '
+      + 'serverless instances share no memory, so there is no throttle on login attempts, and '
+      + 'passphrase entropy is the actual control. Set GHA_PASSWORD to a generated random value '
+      + 'of at least 20 characters.',
+    );
+  }
 }
 
 export function listenWithFallback(server, { host, port, attempts = 20 }) {
@@ -133,6 +271,8 @@ export async function createDriverFromConfig(config) {
 
 export async function main() {
   const config = loadConfig();
+  const auth = createAuth({ passphrase: config.password });
+  assertSafeToStart(config, auth);
 
   const version = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8')).version;
 
@@ -144,7 +284,7 @@ export async function main() {
   const poller = new Poller({ store, client, logger: console });
   poller.intervalHours = config.pollIntervalHours;
 
-  const { requestListener } = createApp({ config, tokenInfo, client, store, poller, version });
+  const { requestListener } = createApp({ config, tokenInfo, client, store, poller, version, auth });
 
   const server = createServer(requestListener);
   let boundPort;
