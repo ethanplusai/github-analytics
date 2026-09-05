@@ -7,7 +7,6 @@ const MAX_SERIES_DAYS = 3650;
 const AVAILABLE_REPOS_TTL_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 10 * 60 * 1000;
 const POLL_BATCH = 40;
-const POLL_DEADLINE_MS = 45_000;
 
 // Constant-time compare that does not leak length through an early return.
 function timingSafeEqualString(a, b) {
@@ -150,7 +149,10 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
       poll,
       pollIntervalHours: config.pollIntervalHours,
       seededAt: await store.getMeta('seeded_at'),
-      dataPath: config.dbPath,
+      // Never the connection string itself — just enough to say where the
+      // data lives. Mirrors server.js's startup banner, which already gets
+      // this right.
+      dataPath: config.postgresUrl ? 'neon postgres' : config.dbPath,
     });
   });
 
@@ -332,7 +334,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
     try {
       let seeded = null;
       if (!await store.getMeta('seeded_at')) seeded = await poller.seedFromGitHub();
-      const result = await poller.pollDue({ limit: POLL_BATCH, deadlineMs: POLL_DEADLINE_MS });
+      const result = await poller.pollDue({ limit: POLL_BATCH, deadlineMs: config.pollDeadlineMs });
       sendJson(res, 200, { ...result, seeded });
     } finally {
       await store.releasePollLock(expiresAt);

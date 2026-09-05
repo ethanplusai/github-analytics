@@ -3,6 +3,7 @@ import { join, isAbsolute, resolve } from 'node:path';
 
 const DEFAULT_PORT = 4319;
 const DEFAULT_POLL_INTERVAL_HOURS = 6;
+const DEFAULT_POLL_DEADLINE_MS = 45_000;
 
 function num(value, fallback) {
   const n = Number(value);
@@ -34,6 +35,12 @@ export function loadConfig(env = process.env) {
     // locally.
     pollMode: env.GHA_POLL_MODE || (env.VERCEL ? 'cron' : 'interval'),
     cronSecret: env.CRON_SECRET || null,
+    // How long GET /api/poll may run before it stops starting new repos and
+    // returns. Must stay below the platform's function `maxDuration` (see
+    // `vercel.json`) — otherwise the platform kills the invocation first,
+    // the lock's `finally` never runs, and the poll lock sits for its full
+    // TTL instead of being released promptly.
+    pollDeadlineMs: num(env.GHA_POLL_DEADLINE_MS, DEFAULT_POLL_DEADLINE_MS),
     allowedHosts: (env.GHA_ALLOWED_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean),
   };
 }

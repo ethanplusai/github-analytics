@@ -63,6 +63,7 @@ Everything has a working default. You shouldn't need any of these.
 | `POSTGRES_URL` | — | Postgres/Neon connection string. When set, traffic is stored there instead of SQLite (`DATABASE_URL` also works — either name is read) |
 | `GHA_POLL_MODE` | `interval`, or `cron` when `VERCEL` is set | `interval` runs the built-in timer; `cron` disables it and waits for `GET /api/poll` to be called from outside instead |
 | `CRON_SECRET` | — | Bearer token required by `GET /api/poll`. With none set, that endpoint refuses every request rather than run unauthenticated |
+| `GHA_POLL_DEADLINE_MS` | `45000` | How long `GET /api/poll` may run before it stops starting new repos and returns. Must stay below the deployment's function `maxDuration` (`vercel.json` sets that to `300` seconds) — otherwise the platform kills the invocation first and the poll lock isn't released until its TTL expires |
 
 ## Your data
 
@@ -93,7 +94,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for both.
 ## Development
 
 ```bash
-npm test     # 172 passing, 1 skipped, no network access required
+npm test     # 180 passing, 1 skipped, no network access required
 npm run dev  # restarts on change
 ```
 

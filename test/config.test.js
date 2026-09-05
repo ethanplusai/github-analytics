@@ -57,3 +57,9 @@ test('local mode is the default and keeps the interval poller', () => {
   assert.equal(cfg.pollMode, 'interval');
   assert.deepEqual(cfg.allowedHosts, []);
 });
+
+test('pollDeadlineMs defaults to 45s and is overridable, so it can never silently exceed the platform limit', () => {
+  assert.equal(loadConfig({}).pollDeadlineMs, 45000);
+  assert.equal(loadConfig({ GHA_POLL_DEADLINE_MS: '120000' }).pollDeadlineMs, 120000);
+  assert.equal(loadConfig({ GHA_POLL_DEADLINE_MS: 'not-a-number' }).pollDeadlineMs, 45000);
+});
