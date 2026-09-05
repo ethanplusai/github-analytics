@@ -1,0 +1,65 @@
+# Why this exists instead of Vercel Cron:
+#
+# The app is deployed to Vercel on the Hobby plan. Vercel Cron calls a
+# project's production *deployment* URL, and on Hobby that deployment URL
+# sits behind Vercel's Standard Protection (Hobby leaves only the production
+# *domain* public, not the deployment URL cron hits). The cron request comes
+# back a 302 to vercel.com/sso-api and never reaches the function at all —
+# confirmed by an empty poll_runs table and no function invocation in the
+# logs after triggering it. The production alias (e.g.
+# https://github-analytics-nu.vercel.app/api/poll) DOES reach the function —
+# it returns this app's own "requires the cron secret" JSON — so only Vercel
+# Cron's request path is blocked, not the app itself.
+#
+# So polling happens here instead, which also upgrades the schedule from
+# Hobby's forced daily minimum to every 6 hours, matching the interval the
+# app has always used when it runs its own built-in timer.
+#
+# This workflow only does anything for a deployment that has configured
+# `POLL_URL` (repository variable) and `CRON_SECRET` (repository secret).
+# Every fork of this public repository starts with neither set, and the job
+# below exits 0 without making any request in that case — a fork must never
+# fail CI or ping someone else's server.
+name: Poll GitHub traffic
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call the poll endpoint
+        env:
+          POLL_URL: ${{ vars.POLL_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -u
+
+          if [ -z "${POLL_URL}" ] || [ -z "${CRON_SECRET}" ]; then
+            echo "POLL_URL (repository variable) and/or CRON_SECRET (repository secret) are not set."
+            echo "This workflow only does anything for a deployment that has configured both of those values -- see docs/DEPLOYMENT.md."
+            echo "Nothing to do; exiting successfully."
+            exit 0
+          fi
+
+          body_file="$(mktemp)"
+          status="$(curl -sS -o "${body_file}" -w '%{http_code}' \
+            --max-time 60 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${POLL_URL}")"
+
+          echo "HTTP status: ${status}"
+          echo "Response body:"
+          cat "${body_file}"
+          echo
+
+          if [ "${status}" != "200" ]; then
+            echo "Poll request failed with status ${status}"
+            exit 1
+          fi

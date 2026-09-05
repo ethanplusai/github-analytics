@@ -99,7 +99,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full picture, including wha
 ## Development
 
 ```bash
-npm test     # 258 passing, 1 skipped, no network access required
+npm test     # 261 passing, 1 skipped, no network access required
 npm run dev  # restarts on change
 ```
 

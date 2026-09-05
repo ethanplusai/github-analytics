@@ -1,8 +1,8 @@
 # Deploying it
 
-Running this locally needs nothing but `npm start`. This document covers the other case: keeping it running continuously and reachable from somewhere other than your own machine. There are two ways to do that, covered in turn below — on a machine you run yourself, behind a subdomain, or on Vercel with a managed Postgres database and Vercel Cron.
+Running this locally needs nothing but `npm start`. This document covers the other case: keeping it running continuously and reachable from somewhere other than your own machine. There are two ways to do that, covered in turn below — on a machine you run yourself, behind a subdomain, or on Vercel with a managed Postgres database and a scheduled poll.
 
-The self-hosted shape is always the same — the app listens on loopback, a reverse proxy terminates TLS and forwards to it, and you tell the app to accept the proxied `Host`. Vercel's shape is different: no proxy, no loopback, a Postgres database instead of the SQLite file, and Vercel Cron calling the poll endpoint instead of the app's own timer. It has its own section, [below](#deploying-to-vercel-with-neon-and-cron).
+The self-hosted shape is always the same — the app listens on loopback, a reverse proxy terminates TLS and forwards to it, and you tell the app to accept the proxied `Host`. Vercel's shape is different: no proxy, no loopback, a Postgres database instead of the SQLite file, and something outside the app calling the poll endpoint on a schedule instead of the app's own timer — Vercel Cron on Pro/Enterprise, or a GitHub Actions workflow on Hobby, since Vercel Cron does not reach the function on that plan (see [below](#a-note-on-the-cron-schedule-and-plan)). It has its own section, [below](#deploying-to-vercel-with-neon-and-cron).
 
 ## Before you start: authentication is optional locally, and required for most public deployments
 
@@ -177,11 +177,11 @@ If you get `403 forbidden_host`, `GHA_ALLOWED_HOSTS` doesn't match the hostname 
 
 ## Deploying to Vercel, with Neon and Cron
 
-This is the other way to keep it running: no server to patch, a managed Postgres database instead of the SQLite file, and Vercel Cron calling the poll endpoint instead of the app's own timer. Vercel deploys automatically the moment you import the repo in step 1 — before you've had any chance to set `GHA_PASSWORD` in step 3 — so expect that first deployment to fail to start; step 1's callout explains why that's expected, and [step 5](#5-security-boundary-deployment-protection-and-gha_password) covers the security reasoning.
+This is the other way to keep it running: no server to patch, a managed Postgres database instead of the SQLite file, and something calling the poll endpoint on a schedule instead of the app's own timer — see [the note on the cron schedule and plan](#a-note-on-the-cron-schedule-and-plan) below for which mechanism does that on which plan. Vercel deploys automatically the moment you import the repo in step 1 — before you've had any chance to set `GHA_PASSWORD` in step 3 — so expect that first deployment to fail to start; step 1's callout explains why that's expected, and [step 5](#5-security-boundary-deployment-protection-and-gha_password) covers the security reasoning.
 
 ### 1. Create the project
 
-Import the repository into Vercel from GitHub as a new project. Nothing needs to be configured by hand beyond that; it's a plain Node HTTP server and Vercel's Node runtime serves it as-is, and `vercel.json` already carries the settings this deployment needs (function duration, the cron schedule, and the `includeFiles` entry that ships `web/` — the dashboard's static assets — inside the function bundle, which is also why the directory is named `web/` rather than `public/`: a directory named `public/` would match Vercel's zero-config static convention and be served straight from its CDN, ahead of the app's own login gate).
+Import the repository into Vercel from GitHub as a new project. Nothing needs to be configured by hand beyond that; it's a plain Node HTTP server and Vercel's Node runtime serves it as-is, and `vercel.json` already carries the settings this deployment needs: function duration and the `includeFiles` entry that ships `web/` — the dashboard's static assets — inside the function bundle, which is also why the directory is named `web/` rather than `public/`: a directory named `public/` would match Vercel's zero-config static convention and be served straight from its CDN, ahead of the app's own login gate. `vercel.json` does **not** carry a `crons` entry — see [the note on the cron schedule and plan](#a-note-on-the-cron-schedule-and-plan) for why, and for what to add there on Pro/Enterprise.
 
 **The deployment Vercel creates the instant you import the repo will fail to start, and that is expected.** No environment variables exist yet — `GHA_PASSWORD` included — so the startup check in `server.js` (`assertSafeToStart`) refuses to boot a serverless instance with nothing protecting it, rather than come up unprotected. That is the safety check doing its job, not a misconfiguration to chase down. It clears itself once you've set the environment variables in step 3 and redeployed.
 
@@ -194,11 +194,11 @@ From the project's Storage tab, add **Neon** from the Vercel Marketplace and cre
 | Variable | Value |
 |---|---|
 | `GITHUB_TOKEN` | A **fine-grained** personal access token with **Administration: Read-only** and **Metadata: Read-only** on the repositories to track, added to Vercel and marked **Sensitive**. This is a token you generate for this purpose — it is not what `gh auth token` prints on your own machine, and it is not a classic token scoped to `repo`. Those two read-only fine-grained permissions are everything the traffic endpoints need. |
-| `CRON_SECRET` | 32 or more random characters, e.g. `openssl rand -hex 32`. Vercel Cron sends this back as `Authorization: Bearer $CRON_SECRET` automatically; see below. |
+| `CRON_SECRET` | 32 or more random characters, e.g. `openssl rand -hex 32`. On Pro/Enterprise, Vercel Cron sends this back as `Authorization: Bearer $CRON_SECRET` automatically. On Hobby, the GitHub Actions workflow sends it instead — set the same value again as a **repository secret** named `CRON_SECRET` on GitHub; see below. |
 | `GHA_ALLOWED_HOSTS` | The custom domain **and** the project's own `.vercel.app` domain, comma-separated — for example `github.ethanplus.ai,github-analytics-xxxx.vercel.app`. |
 | `GHA_PASSWORD` | A password-manager-generated value, 30 or more characters, marked **Sensitive**. See the [security section](#5-security-boundary-deployment-protection-and-gha_password) below for why, and when this can be skipped. The app refuses to start serverless without it unless `GHA_ALLOW_PUBLIC=1` is also set. |
 
-**`GHA_ALLOWED_HOSTS` must list both hosts, not just the custom domain.** Vercel Cron does not call your custom domain — it calls the project's production deployment URL, the `.vercel.app` one. Leave that host out of the allowlist and the site looks perfectly healthy on the custom domain while every single cron invocation fails with `403 forbidden_host`, invisibly — the dashboard shows nothing different. The only way to notice is the function log for the run, under the project's Cron Jobs tab. Find the exact `.vercel.app` hostname on the project's Deployments tab.
+**`GHA_ALLOWED_HOSTS` must list both hosts, not just the custom domain.** On Pro/Enterprise, Vercel Cron does not call your custom domain — it calls the project's production deployment URL, the `.vercel.app` one. Leave that host out of the allowlist and the site looks perfectly healthy on the custom domain while every single cron invocation fails with `403 forbidden_host`, invisibly — the dashboard shows nothing different. The only way to notice is the function log for the run, under the project's Cron Jobs tab. Find the exact `.vercel.app` hostname on the project's Deployments tab. On Hobby, the GitHub Actions workflow calls whatever host `POLL_URL` points at (see [below](#a-note-on-the-cron-schedule-and-plan)) — that host needs to be in the allowlist too, whichever one you choose.
 
 **Redeploy after setting these.** Vercel does not retroactively apply new environment variables to a deployment that already exists — including the automatic one from step 1, which is the one currently failing to start. From the project's Deployments tab, redeploy (or push a new commit) once all four variables above are set. That redeploy is the first one that actually comes up.
 
@@ -252,7 +252,7 @@ Not Standard Protection: Standard Protection deliberately leaves the production 
 
 Use a password-manager-generated value of **30 or more characters**, not a memorable phrase. 20 characters is where the app stops refusing to start, not what it recommends.
 
-**With `GHA_PASSWORD` set, every route except `GET /api/poll` is behind the session gate** — the dashboard, `/app.js`, `/styles.css`, and every `/api/*` route, state-changing or not, all redirect (or return `401`) for an unauthenticated request. `GET /api/poll` is exempt because Vercel Cron calls it with no session cookie; it authenticates instead with `Authorization: Bearer $CRON_SECRET`, which `src/api.js` checks on its own. The enumeration in the next section — routes with no credential at all — applies only when authentication is disabled: `GHA_PASSWORD` unset (Hobby, with `GHA_ALLOW_PUBLIC=1`), or Pro/Enterprise relying on Deployment Protection with `GHA_PASSWORD` omitted.
+**With `GHA_PASSWORD` set, every route except `GET /api/poll` is behind the session gate** — the dashboard, `/app.js`, `/styles.css`, and every `/api/*` route, state-changing or not, all redirect (or return `401`) for an unauthenticated request. `GET /api/poll` is exempt because whatever calls it — Vercel Cron on Pro/Enterprise, or the GitHub Actions workflow on Hobby — sends no session cookie; it authenticates instead with `Authorization: Bearer $CRON_SECRET`, which `src/api.js` checks on its own. The enumeration in the next section — routes with no credential at all — applies only when authentication is disabled: `GHA_PASSWORD` unset (Hobby, with `GHA_ALLOW_PUBLIC=1`), or Pro/Enterprise relying on Deployment Protection with `GHA_PASSWORD` omitted.
 
 **Set `GHA_PASSWORD` in step 3, and redeploy, before attaching the domain in step 6.** The old advice for Deployment Protection — "enable it before attaching the domain" — existed because there was a window, between deploying and remembering to flip a dashboard toggle, where the domain, once attached, was live and world-readable. `GHA_PASSWORD` closes that window by construction, including for the automatic deployment Vercel creates the moment you import the repo: a serverless instance with no password and no `GHA_ALLOW_PUBLIC=1` refuses to run at all rather than run unprotected (that's why step 1's very first deployment is expected to fail to start — see the callout there). Set the variable along with the rest of step 3's table, redeploy so it actually takes effect, and only then move on to step 6 — there is never a moment where the domain resolves to a running, unprotected instance.
 
@@ -279,13 +279,40 @@ Concretely, **with authentication disabled** — `GHA_PASSWORD` unset (on Hobby,
 - `DELETE /api/repos/:owner/:repo` — untracks one.
 - `POST /api/seed` — discovers every repository the token can read traffic for, adds all of them, and then triggers a full poll, in one call.
 
-`GET /api/poll` is the one route with its own credential in every configuration: it requires `Authorization: Bearer $CRON_SECRET`, because that's the request Vercel Cron makes. `CRON_SECRET` protects that single route and nothing else — it was never meant to be, and cannot be, the deployment's whole security boundary.
+`GET /api/poll` is the one route with its own credential in every configuration: it requires `Authorization: Bearer $CRON_SECRET`, because that's the request the scheduled caller makes, whichever one it is. `CRON_SECRET` protects that single route and nothing else — it was never meant to be, and cannot be, the deployment's whole security boundary.
 
 One more route is worth naming even though it doesn't change anything stored: `GET /api/available-repos` also calls GitHub's API directly (list every repo the token can see) rather than the database. It changes no state, but with authentication disabled it lets anyone spend calls against the token's GitHub API rate limit — bounded somewhat by a 5-minute in-memory cache, but still free to trigger from outside.
 
 ### A note on the cron schedule and plan
 
-`vercel.json` schedules `GET /api/poll` once a day (`0 6 * * *`) — the most frequent schedule Hobby allows; Vercel rejects any sub-daily cron expression at deploy time. That is not actually a limitation for this project: GitHub's traffic API re-reports the entire last 14 days on every call, so a once-a-day poll loses no history a more frequent one would have caught. It's simply less current during the day. On Pro or Enterprise, where sub-daily cron is allowed, something like `0 */6 * * *` (every 6 hours) is a reasonable tightening if fresher data matters to you; the code has no opinion either way. `GHA_POLL_DEADLINE_MS` (`45000`) leaves 15 seconds of slack under the `maxDuration` ceiling `vercel.json` sets (`60` seconds, Hobby's cap) regardless of which schedule is in use — don't raise it above that.
+**On Pro or Enterprise, Vercel Cron works and `vercel.json` can carry a `crons` entry.** Something like:
+
+```json
+"crons": [{ "path": "/api/poll", "schedule": "0 */6 * * *" }]
+```
+
+is a reasonable interval if fresher data matters to you — sub-daily schedules are allowed on those plans, and Vercel Cron authenticates itself with `Authorization: Bearer $CRON_SECRET` automatically, no extra setup beyond the `CRON_SECRET` environment variable from step 3. This repository's `vercel.json` does not carry one, for the reason below.
+
+**On Hobby, Vercel Cron does not work, and this was confirmed by measurement, not assumption.** Vercel Cron calls a project's production *deployment* URL — the `.vercel.app` one, not the custom domain — and on Hobby that deployment URL sits behind Vercel's Standard Protection. Standard Protection deliberately leaves the production *domain* public (that's what makes `GHA_PASSWORD` sufficient as the boundary in step 5) but it still gates the deployment URL, and Vercel Cron has no way to authenticate through that gate. The request comes back a `302` to `vercel.com/sso-api` and never reaches the function at all.
+
+**The symptom is silent.** The Cron Jobs tab in the Vercel dashboard shows the job as configured and "running" on schedule; nothing about the dashboard suggests a problem. But no invocation shows up in the function logs for that route, `poll_runs` stays empty, and the data quietly goes stale forever. Hobby also caps cron at once a day (`0 6 * * *` being the most frequent schedule it accepts — sub-daily expressions are rejected at deploy time), which would have been a real limitation even if the request landed. Between those two, `vercel.json` in this repository carries no `crons` entry — a scheduled job that silently never runs is worse than no scheduled job, because it looks like polling is configured when it is not.
+
+**The fix on Hobby is `.github/workflows/poll.yml`.** It's a scheduled GitHub Actions workflow that calls `GET /api/poll` directly with `Authorization: Bearer $CRON_SECRET`, from outside Vercel entirely — nothing about Standard Protection affects a plain `curl` request to the production alias, which is confirmed reachable: `https://github-analytics-nu.vercel.app/api/poll` returns this app's own `{"error":{"code":"unauthorized","message":"This endpoint requires the cron secret."}}` JSON rather than a redirect, proving the host guard passes and only the bearer check refuses. This also upgrades the interval past Hobby's forced daily minimum, to every 6 hours — matching what the app's own built-in timer has always used.
+
+To enable it, set two things on the GitHub repository (not on Vercel — these are separate from the Vercel environment variables in step 3, though `CRON_SECRET`'s value should be the same in both places):
+
+| Setting | Kind | Value |
+|---|---|---|
+| `CRON_SECRET` | repository **secret** | The same value set as the `CRON_SECRET` environment variable on Vercel in step 3. |
+| `POLL_URL` | repository **variable** | The full URL of the poll endpoint on the production alias, e.g. `https://github-analytics-nu.vercel.app/api/poll` or `https://github.ethanplus.ai/api/poll` — either works, but whichever host you pick must be in `GHA_ALLOWED_HOSTS` (see above). |
+
+Both are read by `.github/workflows/poll.yml`. If either is unset, the workflow exits `0` immediately without making a request — this repository is public and will be forked, and a fork must never fail its own CI or ping someone else's server just because it inherited this workflow file with nothing configured.
+
+**Scheduled workflows only run from the repository's default branch.** A schedule trigger defined on any other branch is silently ignored by GitHub — this only takes effect once `.github/workflows/poll.yml` exists on `main`.
+
+**GitHub Actions' own scheduled runs are best-effort.** GitHub documents that scheduled workflows can be delayed, or occasionally skipped, during periods of high load on their infrastructure. That's harmless here for the same reason a once-a-day Hobby cron would have been harmless: GitHub's traffic API re-reports the entire last 14 days on every call, so a delayed or slightly-missed run loses no history a perfectly on-time one would have caught.
+
+`GHA_POLL_DEADLINE_MS` (`45000`) leaves 15 seconds of slack under the `maxDuration` ceiling `vercel.json` sets (`60` seconds) regardless of which caller is in use — don't raise it above that.
 
 ## Backups (self-hosted / SQLite)
 
