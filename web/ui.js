@@ -158,3 +158,25 @@ export function isDeliberateConfirm(armedAt, nowMs, cooldownMs = 400) {
   if (armedAt === null || armedAt === undefined) return false;
   return nowMs - armedAt >= cooldownMs;
 }
+
+/**
+ * The clone-ratio explainer sentence for the repo detail page.
+ *
+ * `ratio` is total clones divided by `uniqueCloners` *summed over the
+ * range* — GitHub's daily unique-cloner count, added up day by day. A
+ * person who clones on three separate days is counted three times, so the
+ * denominator is unique-cloner-*days*, never a headcount of distinct
+ * people. The copy below says "actor", not "person"/"individual"/"user",
+ * precisely so it can't be misread as one.
+ *
+ * Returns null when there's nothing to explain (no cloners in range), so
+ * callers can render nothing rather than a placeholder dash.
+ */
+export function formatCloneRatio(ratio) {
+  if (ratio === null || ratio === undefined) return null;
+  const value = ratio.toFixed(1);
+  if (ratio === 1) {
+    return `${value} clones per unique-cloner-day — no repeat cloning in this range.`;
+  }
+  return `${value} clones per unique-cloner-day — one actor cloning repeatedly, typically CI or a deploy system.`;
+}

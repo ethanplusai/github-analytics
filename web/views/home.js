@@ -328,6 +328,20 @@ export function renderHome(root, ctx) {
     ]);
   }
 
+  // Clones per unique-cloner-*day* (GitHub's daily unique-cloner count,
+  // summed over the range) — never a headcount of distinct people. Split
+  // across the same value/sub-label pattern as the other stat blocks so it
+  // reads as one sentence without needing a hover. Omitted entirely when
+  // there's no ratio to show (no cloners in range) rather than a dash.
+  function buildRatioBlock(cloneRatio) {
+    const ratio = cloneRatio?.ratio;
+    if (ratio === null || ratio === undefined) return null;
+    return el('div', { className: 'repo-card__stat' }, [
+      el('div', { className: 'repo-card__stat-value', text: `${ratio.toFixed(1)} clones` }),
+      el('div', { className: 'repo-card__stat-sub', text: 'per unique-cloner-day' }),
+    ]);
+  }
+
   function buildRepoCard(repo) {
     const nameLine = el('div', { className: 'repo-card__name mono' }, [
       el('span', { className: 'repo-card__owner', text: `${repo.owner}/` }),
@@ -345,6 +359,8 @@ export function renderHome(root, ctx) {
       buildStatBlock('Views', repo.range?.views, repo.range?.uniqueVisitors),
       buildStatBlock('Clones', repo.range?.clones, repo.range?.uniqueCloners),
     ]);
+    const ratioBlock = buildRatioBlock(repo.cloneRatio);
+    if (ratioBlock) statRow.append(ratioBlock);
 
     const footChildren = [el('span', { text: `Updated ${relativeTime(repo.lastPolledAt)}` })];
     if (repo.lastError) {

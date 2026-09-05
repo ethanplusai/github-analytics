@@ -12,8 +12,11 @@
 # Cron's request path is blocked, not the app itself.
 #
 # So polling happens here instead, which also upgrades the schedule from
-# Hobby's forced daily minimum to every 6 hours, matching the interval the
-# app has always used when it runs its own built-in timer.
+# Hobby's forced daily minimum to every 2 hours. That is deliberately more
+# frequent than `GHA_POLL_INTERVAL_HOURS` (default 6), which gates only the
+# app's own in-process timer and has no say in which repos a run picks up —
+# `store.listDueRepos` orders stalest-first and takes `GHA_POLL_BATCH`, with
+# no staleness filter. More runs simply means fresher same-day figures.
 #
 # This workflow only does anything for a deployment that has configured
 # `POLL_URL` (repository variable) and `CRON_SECRET` (repository secret).
@@ -24,7 +27,7 @@ name: Poll GitHub traffic
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */2 * * *'
   workflow_dispatch: {}
 
 permissions: {}

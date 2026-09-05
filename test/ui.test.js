@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  relativeTime, sortRepos, filterRepos, pluralise, noticeKey, isDeliberateConfirm,
+  relativeTime, sortRepos, filterRepos, pluralise, noticeKey, isDeliberateConfirm, formatCloneRatio,
 } from '../web/ui.js';
 
 const NOW = new Date('2026-09-04T12:00:00Z');
@@ -65,4 +65,22 @@ test('isDeliberateConfirm rejects a double-click but accepts a real second click
   assert.equal(isDeliberateConfirm(1000, 1200), false, 'still inside the cooldown');
   assert.equal(isDeliberateConfirm(1000, 1400), true, 'a deliberate second click');
   assert.equal(isDeliberateConfirm(1000, 1100, 50), true, 'cooldown is configurable');
+});
+
+test('formatCloneRatio explains a normal ratio without implying a headcount', () => {
+  const sentence = formatCloneRatio(42.8);
+  assert.equal(sentence, '42.8 clones per unique-cloner-day — one actor cloning repeatedly, typically CI or a deploy system.');
+  for (const word of ['people', 'person', 'persons', 'individual', 'individuals', 'distinct user', 'distinct users']) {
+    assert.equal(sentence.toLowerCase().includes(word), false, `must not say "${word}"`);
+  }
+});
+
+test('formatCloneRatio at exactly 1 does not claim repeat cloning', () => {
+  const sentence = formatCloneRatio(1);
+  assert.equal(sentence, '1.0 clones per unique-cloner-day — no repeat cloning in this range.');
+  assert.equal(sentence.includes('repeatedly'), false);
+});
+
+test('formatCloneRatio returns null (not a dash) when there is nothing to explain', () => {
+  assert.equal(formatCloneRatio(null), null);
 });

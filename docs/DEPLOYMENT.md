@@ -213,6 +213,31 @@ PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH" \
 
 It prints a line per repository and finishes with a mismatch count. That count must be zero; if it isn't, stop and investigate rather than deploy on top of a partial migration. `bin/migrate.js` opens the local SQLite file read-only, so it's safe to re-run.
 
+**Schema changes are not applied for you, ever — not on the first deploy and not
+on later ones.** Only the SQLite path self-applies its schema on open
+(`src/db/sqlite.js`). Nothing in the app runs `schema.postgres.sql` against Neon,
+and no migration tool is wired up. So whenever a release adds a table or a column,
+you must paste the new DDL into Neon's SQL Editor yourself *before* deploying the
+code that reads it — otherwise the app deploys cleanly and then fails at runtime
+with `relation "..." does not exist`, which looks like an outage rather than a
+missed step.
+
+The statements in `src/db/schema.postgres.sql` are all `CREATE TABLE IF NOT
+EXISTS`, so re-running the whole file is safe and is the simplest way to pick up
+a new table. It will NOT add a column to a table that already exists — that needs
+an explicit `ALTER TABLE`.
+
+For the release that added stars, forks and watchers, the new statement is the
+`repo_metrics_daily` block in that file. Run it, then run the backfill to fill in
+the history GitHub still publishes:
+
+```bash
+PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH" \
+  POSTGRES_URL='<value from Vercel>' node bin/backfill-metrics.js
+```
+
+That script is safe to re-run: it leaves any day already recorded alone.
+
 **Then run one more check by hand, on both databases.** The script's own verification compares per-repo totals, coverage and the latest snapshot day, plus how many distinct snapshot days each repo has — it does not walk every middle day's snapshot rows and compare them individually. That's the one gap a clean migrate run doesn't close, and this data cannot be re-fetched once it's wrong, so it's worth the extra minute. Run this on both databases and compare the five numbers:
 
 ```sql
@@ -297,7 +322,7 @@ is a reasonable interval if fresher data matters to you — sub-daily schedules 
 
 **The symptom is silent.** The Cron Jobs tab in the Vercel dashboard shows the job as configured and "running" on schedule; nothing about the dashboard suggests a problem. But no invocation shows up in the function logs for that route, `poll_runs` stays empty, and the data quietly goes stale forever. Hobby also caps cron at once a day (`0 6 * * *` being the most frequent schedule it accepts — sub-daily expressions are rejected at deploy time), which would have been a real limitation even if the request landed. Between those two, `vercel.json` in this repository carries no `crons` entry — a scheduled job that silently never runs is worse than no scheduled job, because it looks like polling is configured when it is not.
 
-**The fix on Hobby is `.github/workflows/poll.yml`.** It's a scheduled GitHub Actions workflow that calls `GET /api/poll` directly with `Authorization: Bearer $CRON_SECRET`, from outside Vercel entirely — nothing about Standard Protection affects a plain `curl` request to the production alias, which is confirmed reachable: `https://github-analytics-nu.vercel.app/api/poll` returns this app's own `{"error":{"code":"unauthorized","message":"This endpoint requires the cron secret."}}` JSON rather than a redirect, proving the host guard passes and only the bearer check refuses. This also upgrades the interval past Hobby's forced daily minimum, to every 6 hours — matching what the app's own built-in timer has always used.
+**The fix on Hobby is `.github/workflows/poll.yml`.** It's a scheduled GitHub Actions workflow that calls `GET /api/poll` directly with `Authorization: Bearer $CRON_SECRET`, from outside Vercel entirely — nothing about Standard Protection affects a plain `curl` request to the production alias, which is confirmed reachable: `https://github-analytics-nu.vercel.app/api/poll` returns this app's own `{"error":{"code":"unauthorized","message":"This endpoint requires the cron secret."}}` JSON rather than a redirect, proving the host guard passes and only the bearer check refuses. This also upgrades the interval past Hobby's forced daily minimum, to every 2 hours. That is deliberately more frequent than `GHA_POLL_INTERVAL_HOURS` (default 6), which governs only the app's own in-process timer and has no say in which repositories a workflow run picks up — `listDueRepos` orders stalest-first and takes `GHA_POLL_BATCH`, with no staleness filter. More runs simply means fresher figures for the current day.
 
 To enable it, set two things on the GitHub repository (not on Vercel — these are separate from the Vercel environment variables in step 3, though `CRON_SECRET`'s value should be the same in both places):
 
@@ -323,7 +348,7 @@ sqlite3 /var/lib/github-analytics/analytics.db \
   ".backup /var/backups/github-analytics-$(date +%F).db"
 ```
 
-That is safe to run while the service is up. A nightly cron or timer is enough; the data only changes every 6 hours.
+That is safe to run while the service is up. A nightly cron or timer is enough; the data only changes when a poll runs, every 2 hours.
 
 On Vercel there is no SQLite file to back up this way — the data lives in Neon, and Neon's own point-in-time restore and branching cover this instead. That's a Neon console concern, not something this project scripts.
 

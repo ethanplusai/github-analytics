@@ -4,6 +4,7 @@ import { join, isAbsolute, resolve } from 'node:path';
 const DEFAULT_PORT = 4319;
 const DEFAULT_POLL_INTERVAL_HOURS = 6;
 const DEFAULT_POLL_DEADLINE_MS = 45_000;
+const DEFAULT_POLL_BATCH = 250;
 
 function num(value, fallback) {
   const n = Number(value);
@@ -53,6 +54,11 @@ export function loadConfig(env = process.env) {
     // the lock's `finally` never runs, and the poll lock sits for its full
     // TTL instead of being released promptly.
     pollDeadlineMs: num(env.GHA_POLL_DEADLINE_MS, DEFAULT_POLL_DEADLINE_MS),
+    // A ceiling, not a promise: GHA_POLL_DEADLINE_MS is what actually bounds a
+    // run. 250 covers the current fleet of 88 with room to grow, and a poll of
+    // 40 repos measured 14s (~0.35s each), so 88 lands near 31s — inside both
+    // the 45s deadline and Vercel's 60s function cap.
+    pollBatch: num(env.GHA_POLL_BATCH, DEFAULT_POLL_BATCH),
     allowedHosts,
     password: env.GHA_PASSWORD || null,
     allowPublic: bool(env.GHA_ALLOW_PUBLIC, false),

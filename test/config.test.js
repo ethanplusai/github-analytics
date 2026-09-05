@@ -40,6 +40,11 @@ test('loadConfig ignores a non-numeric port and falls back to the default', () =
   assert.equal(loadConfig({ GHA_POLL_INTERVAL_HOURS: 'x' }).pollIntervalHours, 6);
 });
 
+test('the poll batch defaults high enough to cover the whole fleet', () => {
+  assert.equal(loadConfig({}).pollBatch, 250);
+  assert.equal(loadConfig({ GHA_POLL_BATCH: '10' }).pollBatch, 10);
+});
+
 test('cloud mode is selected by POSTGRES_URL and VERCEL', () => {
   const cfg = loadConfig({ POSTGRES_URL: 'postgres://x', VERCEL: '1', CRON_SECRET: 's',
     GHA_ALLOWED_HOSTS: 'github.ethanplus.ai, gha.vercel.app' });

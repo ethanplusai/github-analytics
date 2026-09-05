@@ -465,7 +465,8 @@ a { color: inherit; }
 
 .repo-card__stats {
   display: flex;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
 }
 
 .repo-card__stat {

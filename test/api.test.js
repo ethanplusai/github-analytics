@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
-import { createApi, resolveRange } from '../src/api.js';
+import { createApi, resolveRange, cloneRatio } from '../src/api.js';
 import { sendError } from '../src/http.js';
 
 const NOW = new Date('2026-09-04T12:00:00Z');
@@ -78,6 +78,29 @@ test('resolveRange does not resolve inherited Object.prototype keys', () => {
   // exactly like any other unrecognised value.
   assert.deepEqual(resolveRange('toString', NOW), { range: 'all', sinceDay: null });
   assert.deepEqual(resolveRange('constructor', NOW), { range: 'all', sinceDay: null });
+});
+
+// Unit tests against the raw return value, below the JSON boundary. Through
+// fetch(), JSON.stringify(NaN) and JSON.stringify(Infinity) both serialize
+// to `null` — indistinguishable from a correctly-guarded null — so an HTTP
+// round trip cannot prove the divide-by-zero guard exists. These can.
+test('cloneRatio computes a normal ratio when there are cloners', () => {
+  const result = cloneRatio({ clones: 100, uniqueCloners: 4 });
+  assert.equal(result.ratio, 25);
+});
+
+test('cloneRatio.ratio is exactly null, not NaN, when clones and cloners are both zero', () => {
+  const result = cloneRatio({ clones: 0, uniqueCloners: 0 });
+  assert.equal(result.ratio, null);
+  assert.equal(Number.isNaN(result.ratio), false);
+});
+
+test('cloneRatio.ratio is exactly null, not Infinity, when there are clones but no cloners', () => {
+  const result = cloneRatio({ clones: 100, uniqueCloners: 0 });
+  // Identity with null, not merely "not finite" — null itself is not finite,
+  // so a Number.isFinite() check alone would not catch a regression here.
+  assert.equal(result.ratio, null);
+  assert.notEqual(result.ratio, Infinity);
 });
 
 test('GET /api/health', async () => {
@@ -222,6 +245,107 @@ test('the detail series for range=all starts at the first recorded day', async (
     assert.equal(body.series.days[0], '2026-01-01');
     assert.equal(body.series.days.at(-1), '2026-09-04');
     assert.equal(body.series.views[0], 100);
+  });
+});
+
+test('repo detail includes a metrics series and says where watchers begin', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      // A backfilled day: no watcher figure exists for it.
+      await store.recordRepoMetrics(repo.id, '2026-09-03', { stars: 10, forks: 2, watchers: null }, '2026-09-03T00:00:00Z');
+      // A polled day: a real watcher figure.
+      await store.recordRepoMetrics(repo.id, '2026-09-04', { stars: 12, forks: 3, watchers: 5 }, '2026-09-04T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=all`)).json();
+    assert.deepEqual(body.metrics.days, ['2026-09-03', '2026-09-04']);
+    assert.deepEqual(body.metrics.stars, [10, 12]);
+    assert.deepEqual(body.metrics.forks, [2, 3]);
+    assert.deepEqual(body.metrics.watchers, [null, 5]);
+    // The first day a watcher figure exists — everything before it is history
+    // GitHub does not publish, and the UI must say so rather than plot a zero.
+    assert.equal(body.metrics.watchersFrom, '2026-09-04');
+  });
+});
+
+test('watchersFrom is absolute, not relative to the selected range', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      // A watcher figure far outside the 30-day window the request will ask for.
+      await store.recordRepoMetrics(repo.id, '2026-01-05', { stars: 1, forks: 0, watchers: 4 }, '2026-01-05T00:00:00Z');
+      await store.recordRepoMetrics(repo.id, '2026-09-03', { stars: 9, forks: 1, watchers: 7 }, '2026-09-03T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=30`)).json();
+    // The plotted series is correctly limited to the range...
+    assert.equal(body.metrics.days.includes('2026-01-05'), false);
+    // ...but "GitHub publishes no earlier watcher history" is a claim about ALL
+    // recorded history. Deriving it from the range made the page assert that
+    // falsehood about data this app was itself holding.
+    assert.equal(body.metrics.watchersFrom, '2026-01-05');
+    // Likewise the headline figure is the newest on record, not newest-in-range.
+    assert.equal(body.metrics.latestWatchers, 7);
+  });
+});
+
+test('watchersFrom is null when no watcher figure has ever been recorded', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      await store.recordRepoMetrics(repo.id, '2026-09-03', { stars: 1, forks: 0, watchers: null }, '2026-09-03T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=all`)).json();
+    assert.equal(body.metrics.watchersFrom, null);
+  });
+});
+
+test('cloneRatio is clones divided by unique cloners for the range', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      await store.ingestTrafficSeries(repo.id, 'clones', [
+        { timestamp: '2026-09-03T00:00:00Z', count: 100, uniques: 2 },
+      ], '2026-09-03T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=all`)).json();
+    assert.equal(body.cloneRatio.clones, 100);
+    assert.equal(body.cloneRatio.uniqueCloners, 2);
+    assert.equal(body.cloneRatio.ratio, 50);
+  });
+});
+
+test('cloneRatio is null rather than Infinity when nobody cloned', async () => {
+  await withApi({
+    // Not seedRepo: it always ingests a clones row, which would give a real
+    // (non-null) ratio. This repo has no traffic rows at all.
+    storeSetup: async (store) => {
+      await store.upsertRepo({
+        fullName: 'octo/hello', owner: 'octo', name: 'hello', private: false, description: null, htmlUrl: null,
+      }, '2026-09-04T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos/octo/hello?range=all`)).json();
+    assert.equal(body.cloneRatio.ratio, null);
+    // Not NaN, not Infinity — both would render as garbage in the UI.
+    assert.equal(Number.isFinite(body.cloneRatio.ratio), false);
+  });
+});
+
+test('the home list carries a cloneRatio per repo', async () => {
+  await withApi({
+    storeSetup: async (store) => {
+      const repo = await seedRepo(store, 'octo/hello');
+      await store.ingestTrafficSeries(repo.id, 'clones', [
+        { timestamp: '2026-09-03T00:00:00Z', count: 9, uniques: 3 },
+      ], '2026-09-03T00:00:00Z');
+    },
+  }, async (base) => {
+    const body = await (await fetch(`${base}/api/repos`)).json();
+    assert.equal(body.repos[0].cloneRatio.ratio, 3);
   });
 });
 
@@ -432,6 +556,17 @@ test('GET /api/poll runs when the token matches', async () => {
     assert.equal(res.status, 200);
     assert.equal((await res.json()).total, 2);
   });
+});
+
+test('GET /api/poll passes the configured batch to the poller', async () => {
+  let seenLimit = null;
+  const poller = stubPoller({
+    pollDue: async ({ limit }) => { seenLimit = limit; return { total: 0, ok: 0, failed: 0, remaining: 0 }; },
+  });
+  await withApi({ client: {}, poller, config: { ...cronConfig, pollBatch: 7 } }, async (base) => {
+    await fetch(`${base}/api/poll`, { headers: { authorization: 'Bearer test-secret' } });
+  });
+  assert.equal(seenLimit, 7);
 });
 
 test('GET /api/poll reports 409 while another run holds the lock', async () => {

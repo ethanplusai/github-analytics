@@ -6,7 +6,6 @@ import { FULL_NAME_RE, normaliseRepo, GitHubError } from './github.js';
 const MAX_SERIES_DAYS = 3650;
 const AVAILABLE_REPOS_TTL_MS = 5 * 60 * 1000;
 const LOCK_TTL_MS = 10 * 60 * 1000;
-const POLL_BATCH = 40;
 
 // Constant-time compare that does not leak length through an early return.
 function timingSafeEqualString(a, b) {
@@ -97,6 +96,39 @@ function densifySummary(summary, sparkSinceDay, now) {
   return { ...summary, spark: densifySpark(summary.spark, sparkSinceDay, now) };
 }
 
+// Shape a repo_metrics_daily series into the parallel-arrays form the charts
+// already consume, mirroring how `series` is built in denseSeries. Unlike
+// traffic, metrics rows are not zero-filled: a missing day means no poll or
+// backfill ever ran for it, and there's no honest zero to fill it with.
+// `watchersFrom` and `latestWatchers` are passed in rather than derived from
+// `rows`, because `rows` is limited to the selected range and both of these are
+// claims about ALL recorded history. Deriving them here would make the page say
+// "GitHub publishes no earlier watcher history" about a date that moves when the
+// reader switches range — false whenever the app holds watcher data older than
+// the window being viewed.
+function metricsFrom(rows, { watchersFrom, latestWatchers }) {
+  return {
+    days: rows.map((r) => r.day),
+    stars: rows.map((r) => r.stars),
+    forks: rows.map((r) => r.forks),
+    watchers: rows.map((r) => r.watchers),
+    watchersFrom,
+    latestWatchers,
+  };
+}
+
+// Plain arithmetic, deliberately not a judgement: a high ratio means one actor
+// cloned repeatedly, which is what CI and deploy systems do. GitHub never tells
+// us who cloned, so the dashboard reports the number and explains it rather
+// than classifying the repo.
+export function cloneRatio({ clones, uniqueCloners }) {
+  return {
+    clones,
+    uniqueCloners,
+    ratio: uniqueCloners > 0 ? Number((clones / uniqueCloners).toFixed(1)) : null,
+  };
+}
+
 function mapGitHubError(err) {
   switch (err.kind) {
     case 'auth': return { status: 401, code: 'bad_token' };
@@ -164,7 +196,10 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
       range,
       sinceDay,
       generatedAt: now().toISOString(),
-      repos: summaries.map((s) => densifySummary(s, sparkSinceDay, now())),
+      repos: summaries.map((s) => ({
+        ...densifySummary(s, sparkSinceDay, now()),
+        cloneRatio: cloneRatio(s.range),
+      })),
     });
   });
 
@@ -246,6 +281,11 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
     const allTime = await store.totals(repo.id, null);
     const latestWindow = await store.latestWindow(repo.id);
     const series = await denseSeries(store, repo.id, sinceDay, now());
+    const latest = await store.latestMetrics(repo.id);
+    const metrics = metricsFrom(await store.metricsSeries(repo.id, sinceDay), {
+      watchersFrom: await store.watchersRecordedFrom(repo.id),
+      latestWatchers: latest?.watchers ?? null,
+    });
     const referrers = await store.latestReferrers(repo.id, 20);
     const paths = await store.latestPaths(repo.id, 20);
 
@@ -269,6 +309,8 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
       allTime,
       latestWindow,
       series,
+      metrics,
+      cloneRatio: cloneRatio(totals),
       referrers,
       paths,
     });
@@ -334,7 +376,7 @@ export function createApi({ store, poller, client, tokenInfo, config, version, n
     try {
       let seeded = null;
       if (!await store.getMeta('seeded_at')) seeded = await poller.seedFromGitHub();
-      const result = await poller.pollDue({ limit: POLL_BATCH, deadlineMs: config.pollDeadlineMs });
+      const result = await poller.pollDue({ limit: config.pollBatch, deadlineMs: config.pollDeadlineMs });
       sendJson(res, 200, { ...result, seeded });
     } finally {
       await store.releasePollLock(expiresAt);

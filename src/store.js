@@ -205,6 +205,56 @@ export class Store {
     await this.driver.transaction(statements);
   }
 
+  // Deliberately NOT monotonic, unlike ingestTrafficSeries. Stars and forks go
+  // DOWN when someone unstars or deletes a fork, so the newest reading for a
+  // day replaces the earlier one. A GREATEST upsert here — which the rest of
+  // this file would lead you to expect — would freeze every repo at its peak
+  // star count forever.
+  async recordRepoMetrics(repoId, day, { stars, forks, watchers }, recordedAtIso) {
+    await this.driver.run(`
+      INSERT INTO repo_metrics_daily (repo_id, day, stars, forks, watchers, recorded_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(repo_id, day) DO UPDATE SET
+        stars = excluded.stars,
+        forks = excluded.forks,
+        watchers = excluded.watchers,
+        recorded_at = excluded.recorded_at
+    `, [repoId, day, stars, forks, watchers ?? null, recordedAtIso]);
+  }
+
+  async metricsSeries(repoId, sinceDay) {
+    const where = sinceDay ? 'AND day >= ?' : '';
+    const params = sinceDay ? [repoId, sinceDay] : [repoId];
+    const rows = await this.driver.query(`
+      SELECT day, stars, forks, watchers FROM repo_metrics_daily
+      WHERE repo_id = ? ${where}
+      ORDER BY day ASC
+    `, params);
+    return rows.map(plain);
+  }
+
+  // The first day any watcher figure was ever recorded, deliberately independent
+  // of whatever range the caller is looking at. The UI states this as a fact
+  // about what GitHub publishes ("no earlier watcher history"), so it must not
+  // shift when the reader changes the range — a range-relative value would make
+  // the page assert a falsehood about data this app is itself holding.
+  async watchersRecordedFrom(repoId) {
+    const rows = await this.driver.query(
+      'SELECT MIN(day) AS day FROM repo_metrics_daily WHERE repo_id = ? AND watchers IS NOT NULL',
+      [repoId],
+    );
+    // MIN over zero matching rows still returns one row, with a NULL day.
+    return rows[0]?.day ?? null;
+  }
+
+  async latestMetrics(repoId) {
+    const rows = await this.driver.query(`
+      SELECT day, stars, forks, watchers FROM repo_metrics_daily
+      WHERE repo_id = ? ORDER BY day DESC LIMIT 1
+    `, [repoId]);
+    return plain(rows[0] ?? null);
+  }
+
   // --- reads --------------------------------------------------------------
 
   async dailySeries(repoId, kind, sinceDay) {

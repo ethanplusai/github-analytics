@@ -21,6 +21,11 @@ export function normaliseRepo(r) {
     htmlUrl: r.html_url ?? null,
     pushedAt: r.pushed_at ?? null,
     canReadTraffic: r.permissions?.push === true,
+    stars: r.stargazers_count ?? 0,
+    forks: r.forks_count ?? 0,
+    // subscribers_count, NOT watchers_count — the latter is a legacy alias for
+    // the star count and would silently duplicate it.
+    watchers: r.subscribers_count ?? null,
   };
 }
 
@@ -59,10 +64,10 @@ export class GitHubClient {
     this.maxRetries = maxRetries;
   }
 
-  async request(path, { method = 'GET' } = {}) {
+  async request(path, { method = 'GET', accept = 'application/vnd.github+json' } = {}) {
     const url = new URL(path, this.baseUrl);
     const headers = {
-      Accept: 'application/vnd.github+json',
+      Accept: accept,
       'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'github-analytics',
     };
@@ -125,21 +130,52 @@ export class GitHubClient {
     return this.request('/user');
   }
 
-  async listOwnedRepos() {
-    const repos = [];
-    for (let page = 1; page <= 10; page += 1) {
-      const items = await this.request(
-        `/user/repos?per_page=100&affiliation=owner&sort=pushed&page=${page}`,
-      );
-      repos.push(...items.map(normaliseRepo));
+  // Walks a paginated collection. The 10-page ceiling is the same guard
+  // listOwnedRepos has always had: a bounded loop rather than a trust in the
+  // API to eventually return a short page.
+  async paginate(path, { accept, maxPages = 10 } = {}) {
+    const out = [];
+    for (let page = 1; page <= maxPages; page += 1) {
+      const sep = path.includes('?') ? '&' : '?';
+      const items = await this.request(`${path}${sep}per_page=100&page=${page}`, { accept });
+      if (!Array.isArray(items)) break;
+      out.push(...items);
       if (items.length < 100) break;
     }
-    return repos;
+    return out;
+  }
+
+  async listOwnedRepos() {
+    const items = await this.paginate('/user/repos?affiliation=owner&sort=pushed');
+    return items.map(normaliseRepo);
   }
 
   async getRepo(fullName) {
     this.assertFullName(fullName);
     return this.request(`/repos/${fullName}`);
+  }
+
+  // starred_at is returned ONLY with this Accept header. Without it the call
+  // still succeeds and returns a plain user list — the history is silently
+  // unrecoverable rather than an error.
+  //
+  // maxPages is raised well past the default 10 (1,000 items): the fleet's
+  // largest repo already has 714 stars, and a 10-page ceiling would silently
+  // truncate its history — and any repo that later outgrows even this would
+  // do so silently too, so this number is a measured margin, not a promise.
+  async listStargazerDates(fullName) {
+    this.assertFullName(fullName);
+    const rows = await this.paginate(`/repos/${fullName}/stargazers`, {
+      accept: 'application/vnd.github.star+json',
+      maxPages: 50,
+    });
+    return rows.map((r) => r.starred_at).filter(Boolean);
+  }
+
+  async listForkDates(fullName) {
+    this.assertFullName(fullName);
+    const rows = await this.paginate(`/repos/${fullName}/forks`, { maxPages: 50 });
+    return rows.map((r) => r.created_at).filter(Boolean);
   }
 
   async getClones(fullName) {

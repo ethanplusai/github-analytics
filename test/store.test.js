@@ -386,3 +386,75 @@ test('listDueRepos puts never-polled repos first, then the stalest', async () =>
   const due = await store.listDueRepos(2);
   assert.deepEqual(due.map((r) => r.fullName), ['a/two', 'a/three']);
 });
+
+test('repo metrics are recorded per day and read back in order', async () => {
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 10, forks: 2, watchers: 3 }, '2026-01-01T00:00:00Z');
+  await store.recordRepoMetrics(repo.id, '2026-01-02', { stars: 12, forks: 2, watchers: 3 }, '2026-01-02T00:00:00Z');
+  assert.deepEqual(await store.metricsSeries(repo.id, null), [
+    { day: '2026-01-01', stars: 10, forks: 2, watchers: 3 },
+    { day: '2026-01-02', stars: 12, forks: 2, watchers: 3 },
+  ]);
+  assert.deepEqual(await store.latestMetrics(repo.id), { day: '2026-01-02', stars: 12, forks: 2, watchers: 3 });
+});
+
+test('a later reading for the same day REPLACES the earlier one, including downwards', async () => {
+  // Stars go down when someone unstars. This table must not behave like
+  // traffic_daily, whose upsert only ever raises a figure.
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 10, forks: 2, watchers: 3 }, '2026-01-01T00:00:00Z');
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 8, forks: 2, watchers: 3 }, '2026-01-01T06:00:00Z');
+  assert.equal((await store.latestMetrics(repo.id)).stars, 8);
+});
+
+test('metricsSeries honours sinceDay', async () => {
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  for (const [day, stars] of [['2026-01-01', 1], ['2026-01-05', 5]]) {
+    await store.recordRepoMetrics(repo.id, day, { stars, forks: 0, watchers: null }, `${day}T00:00:00Z`);
+  }
+  assert.deepEqual((await store.metricsSeries(repo.id, '2026-01-03')).map((r) => r.day), ['2026-01-05']);
+});
+
+test('watchersRecordedFrom skips backfilled days and ignores any range', async () => {
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  // Backfilled history: stars and forks, but no watcher figure exists for these.
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 1, forks: 0, watchers: null }, '2026-01-01T00:00:00Z');
+  await store.recordRepoMetrics(repo.id, '2026-01-02', { stars: 2, forks: 0, watchers: null }, '2026-01-02T00:00:00Z');
+  // The first real poll — this is the day watchers genuinely begin.
+  await store.recordRepoMetrics(repo.id, '2026-01-03', { stars: 3, forks: 0, watchers: 6 }, '2026-01-03T00:00:00Z');
+  await store.recordRepoMetrics(repo.id, '2026-01-04', { stars: 4, forks: 0, watchers: 7 }, '2026-01-04T00:00:00Z');
+  assert.equal(await store.watchersRecordedFrom(repo.id), '2026-01-03');
+});
+
+test('watchersRecordedFrom is null when only backfilled days exist', async () => {
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 1, forks: 0, watchers: null }, '2026-01-01T00:00:00Z');
+  // MIN() over no matching rows still returns a row, with a NULL day — the
+  // method must turn that into null rather than leaking an undefined.
+  assert.equal(await store.watchersRecordedFrom(repo.id), null);
+});
+
+test('a null watcher count survives the round trip as null, not zero', async () => {
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  await store.recordRepoMetrics(repo.id, '2026-01-01', { stars: 1, forks: 0, watchers: null }, '2026-01-01T00:00:00Z');
+  assert.equal((await store.latestMetrics(repo.id)).watchers, null);
+});
+
+test('latestMetrics is null for a repo with no readings', async () => {
+  const store = freshStore();
+  await store.upsertRepo({ fullName: 'a/b', owner: 'a', name: 'b' }, '2026-01-01T00:00:00Z');
+  const repo = await store.getRepo('a/b');
+  assert.equal(await store.latestMetrics(repo.id), null);
+});
