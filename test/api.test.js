@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
-import { createApi, resolveRange } from '../src/api.js';
+import { createApi, resolveRange, cloneRatio } from '../src/api.js';
 import { sendError } from '../src/http.js';
 
 const NOW = new Date('2026-09-04T12:00:00Z');
@@ -78,6 +78,29 @@ test('resolveRange does not resolve inherited Object.prototype keys', () => {
   // exactly like any other unrecognised value.
   assert.deepEqual(resolveRange('toString', NOW), { range: 'all', sinceDay: null });
   assert.deepEqual(resolveRange('constructor', NOW), { range: 'all', sinceDay: null });
+});
+
+// Unit tests against the raw return value, below the JSON boundary. Through
+// fetch(), JSON.stringify(NaN) and JSON.stringify(Infinity) both serialize
+// to `null` — indistinguishable from a correctly-guarded null — so an HTTP
+// round trip cannot prove the divide-by-zero guard exists. These can.
+test('cloneRatio computes a normal ratio when there are cloners', () => {
+  const result = cloneRatio({ clones: 100, uniqueCloners: 4 });
+  assert.equal(result.ratio, 25);
+});
+
+test('cloneRatio.ratio is exactly null, not NaN, when clones and cloners are both zero', () => {
+  const result = cloneRatio({ clones: 0, uniqueCloners: 0 });
+  assert.equal(result.ratio, null);
+  assert.equal(Number.isNaN(result.ratio), false);
+});
+
+test('cloneRatio.ratio is exactly null, not Infinity, when there are clones but no cloners', () => {
+  const result = cloneRatio({ clones: 100, uniqueCloners: 0 });
+  // Identity with null, not merely "not finite" — null itself is not finite,
+  // so a Number.isFinite() check alone would not catch a regression here.
+  assert.equal(result.ratio, null);
+  assert.notEqual(result.ratio, Infinity);
 });
 
 test('GET /api/health', async () => {

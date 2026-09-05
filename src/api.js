@@ -116,7 +116,7 @@ function metricsFrom(rows) {
 // cloned repeatedly, which is what CI and deploy systems do. GitHub never tells
 // us who cloned, so the dashboard reports the number and explains it rather
 // than classifying the repo.
-function cloneRatio({ clones, uniqueCloners }) {
+export function cloneRatio({ clones, uniqueCloners }) {
   return {
     clones,
     uniqueCloners,
