@@ -93,6 +93,18 @@ export function openBrowser(url, { platform = process.platform, run = execFile }
   }
 }
 
+// Off the loopback interface, `config.host` is meaningless — a serverless
+// deployment binds `0.0.0.0` and is reached only through whatever host the
+// platform puts in front of it. `process.env.VERCEL_URL` names that host on
+// Vercel; with nothing to name it, the banner omits the URL line rather than
+// print something untrue.
+export function bannerUrl(config, boundPort, env = process.env) {
+  if (config.serverless) {
+    return env.VERCEL_URL ? `https://${env.VERCEL_URL}` : null;
+  }
+  return `http://${config.host}:${boundPort}`;
+}
+
 export function createShutdownHandler({ poller, server, store, exit = process.exit, forceMs = 2000 }) {
   let shuttingDown = false;
   return function shutdown() {
@@ -145,12 +157,10 @@ export async function main() {
     boundPort = await listenWithFallback(server, config);
   }
 
-  const url = `http://${config.host}:${boundPort}`;
+  const url = bannerUrl(config, boundPort);
   const dataLabel = config.postgresUrl ? 'neon postgres' : config.dbPath;
-  const lines = [
-    '  GitHub Analytics',
-    `  → ${url}`,
-  ];
+  const lines = ['  GitHub Analytics'];
+  if (url) lines.push(`  → ${url}`);
   if (token) {
     lines.push(`  token: ${source}   ·   data: ${dataLabel}`);
     lines.push('  Collecting traffic in the background. Press Ctrl+C to stop.');

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createApp, listenWithFallback, createShutdownHandler, createDriverFromConfig } from '../server.js';
+import { createApp, listenWithFallback, createShutdownHandler, createDriverFromConfig, bannerUrl } from '../server.js';
 import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
 import { Poller } from '../src/poller.js';
@@ -171,6 +171,21 @@ test('createDriverFromConfig picks sqlite when no postgresUrl is configured', as
   } finally {
     await driver.close();
   }
+});
+
+test('bannerUrl builds a loopback URL when not serverless', () => {
+  const url = bannerUrl({ ...CONFIG, serverless: false, host: '127.0.0.1' }, 4319, {});
+  assert.equal(url, 'http://127.0.0.1:4319');
+});
+
+test('bannerUrl uses VERCEL_URL when serverless and it is set', () => {
+  const url = bannerUrl({ ...CONFIG, serverless: true }, 3000, { VERCEL_URL: 'my-app-abc123.vercel.app' });
+  assert.equal(url, 'https://my-app-abc123.vercel.app');
+});
+
+test('bannerUrl omits the URL when serverless with no VERCEL_URL, rather than print the bind address', () => {
+  const url = bannerUrl({ ...CONFIG, serverless: true, host: '0.0.0.0' }, 3000, {});
+  assert.equal(url, null);
 });
 
 test('no HTML in the app declares a modal dialog', async () => {

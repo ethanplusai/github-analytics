@@ -58,6 +58,9 @@ Everything has a working default. You shouldn't need any of these.
 | `GHA_AUTO_SEED` | `1` | Discover and add your repos on first launch |
 | `GHA_OPEN` | `1` | Open a browser on start |
 | `GHA_ALLOWED_HOSTS` | — | Extra `Host` values to accept, for a reverse proxy |
+| `POSTGRES_URL` | — | Postgres/Neon connection string. When set, traffic is stored there instead of SQLite (`DATABASE_URL` also works — either name is read) |
+| `GHA_POLL_MODE` | `interval`, or `cron` when `VERCEL` is set | `interval` runs the built-in timer; `cron` disables it and waits for `GET /api/poll` to be called from outside instead |
+| `CRON_SECRET` | — | Bearer token required by `GET /api/poll`. With none set, that endpoint refuses every request rather than run unauthenticated |
 
 ## Your data
 
@@ -77,20 +80,24 @@ The server listens on loopback only and refuses requests whose `Host` header isn
 
 **The port was busy.** It moves to the next free one by itself. Read the URL in the banner.
 
-**Node is too old.** You need Node 22.13 or newer — the database is Node's built-in `node:sqlite`, which is what lets this project run with zero dependencies.
+**Node is too old.** You need Node 22.13 or newer — the database is Node's built-in `node:sqlite`, which is what lets `npm start` run locally with nothing to install.
 
-## Deploying it behind a subdomain
+## Running it on the internet
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+This app has no login of its own — no accounts, no passwords, no per-user anything. Anyone who can reach it can see every tracked repository's name and its traffic, private repos included. Putting it anywhere reachable from outside your own machine means something else has to keep other people out: a reverse proxy with basic auth for a self-hosted subdomain, or Vercel's Deployment Protection for a Vercel deployment.
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for both.
 
 ## Development
 
 ```bash
-npm test     # 122 tests, no network access required
+npm test     # 169 passing, 1 skipped, no network access required
 npm run dev  # restarts on change
 ```
 
-No dependencies and no build step — `package.json` has no `dependencies` block at all. Everything comes from the Node standard library and the browser.
+The one skip is the Postgres conformance test, which compares SQLite and Postgres side by side — it needs a scratch database to run against (`GHA_TEST_POSTGRES_URL`), so it stays skipped unless you set that.
+
+No build step, and no install step for local use. `package.json` lists exactly one dependency, `@neondatabase/serverless` — imported dynamically, from `src/db/postgres.js`, and only reached when `POSTGRES_URL` (or `DATABASE_URL`) is set. Run it locally against SQLite, as above, and that import is never touched. Everything else comes from the Node standard library and the browser.
 
 | Path | What's in it |
 |---|---|
