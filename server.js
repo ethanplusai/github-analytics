@@ -92,7 +92,7 @@ export function createApp({
       const url = new URL(req.url, 'http://localhost');
 
       if (auth.enabled) {
-        const secure = Boolean(config.serverless);
+        const secure = Boolean(config.secureCookies);
 
         if (url.pathname === '/login') {
           if (req.method === 'GET') {
@@ -173,7 +173,13 @@ export function createApp({
 // without spinning up the whole process. Both name the exact env vars an
 // operator needs to set.
 export function assertSafeToStart(config, auth) {
-  if (config.serverless && !auth.enabled && !config.allowPublic) {
+  // Decided by how the app is actually reachable (Vercel, or self-hosted
+  // behind a proxy with GHA_ALLOWED_HOSTS set — see `exposedBeyondLoopback`
+  // in src/config.js), not by `config.serverless` alone. A loopback-only
+  // local instance is exempt from both checks below; anything reachable
+  // beyond loopback is not, regardless of which of the two shapes it is.
+  const exposed = config.exposedBeyondLoopback;
+  if (exposed && !auth.enabled && !config.allowPublic) {
     throw new Error(
       'Refusing to start: this deployment would be public and has no passphrase. '
       + 'Set GHA_PASSWORD, or set GHA_ALLOW_PUBLIC=1 if you really intend a public dashboard.',
@@ -183,12 +189,13 @@ export function assertSafeToStart(config, auth) {
   // the raw env value — otherwise GHA_PASSWORD='abc' padded with 20 trailing
   // spaces would satisfy a raw-length check while the effective secret
   // stayed 3 characters. See src/auth.js's `effectiveLength`.
-  if (config.serverless && auth.enabled && auth.effectiveLength < 20) {
+  if (exposed && auth.enabled && auth.effectiveLength < 20) {
     throw new Error(
       'Refusing to start: GHA_PASSWORD is shorter than 20 characters. This is deliberate: '
-      + 'serverless instances share no memory, so there is no throttle on login attempts, and '
+      + 'an instance reachable beyond loopback has no rate limiting on login attempts, so '
       + 'passphrase entropy is the actual control. Set GHA_PASSWORD to a generated random value '
-      + 'of at least 20 characters.',
+      + 'of at least 20 characters, or unset GHA_PASSWORD entirely (pairing that with '
+      + 'GHA_ALLOW_PUBLIC=1) if a genuinely public dashboard is what you intend.',
     );
   }
 }

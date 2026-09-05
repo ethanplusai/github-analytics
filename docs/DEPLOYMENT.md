@@ -10,6 +10,8 @@ The app has a built-in login: set `GHA_PASSWORD` and every route except `GET /ap
 
 **Once this is reachable from outside your own machine, something has to keep other people out, or `GHA_PASSWORD` has to.** Behind a reverse proxy, that something can be basic auth, an identity-aware proxy, a VPN, or an IP allowlist instead of (or alongside) `GHA_PASSWORD`; both proxy examples below include basic auth for that reason. On Vercel, which boundary is available depends on the plan — see the [security section](#5-security-boundary-deployment-protection-and-gha_password) below. Publishing this with no boundary at all puts your private repositories' traffic on the open web.
 
+**The app enforces this itself, self-hosted included, not only on Vercel.** It has no way to see whatever the proxy in front of it is doing, so it treats `GHA_ALLOWED_HOSTS` being set — which self-hosting behind a proxy requires (step 3, below) — as "this is a public deployment," the same way it treats `VERCEL` being set. With `GHA_ALLOWED_HOSTS` set, the app refuses to start with no `GHA_PASSWORD` unless `GHA_ALLOW_PUBLIC=1` is also set, and refuses a `GHA_PASSWORD` under 20 trimmed characters. If your proxy's basic auth (or IAP, VPN, IP allowlist) is the only boundary and you're deliberately running with no `GHA_PASSWORD`, set `GHA_ALLOW_PUBLIC=1` too — it does not mean "no boundary," only "the app itself isn't the one providing it."
+
 ## 1. Put the app somewhere and give it a data directory
 
 ```bash
@@ -236,9 +238,9 @@ Which boundary protects this deployment depends on the Vercel plan — the two a
 
 Not Standard Protection: Standard Protection deliberately leaves the production domain public and only gates preview deployments, which is the wrong shape here because the production domain *is* the whole dashboard. "All Deployments" is a Pro-and-above scope. Confirm it worked by opening the deployment's `.vercel.app` URL in a private browser window — it must show a Vercel login page, never the dashboard.
 
-**On Hobby, that option does not exist.** Standard Protection is the only scope Hobby offers, and it deliberately leaves the production domain public — there is no way to put this app's production URL behind Vercel Authentication on Hobby. `GHA_PASSWORD` is therefore **required**, and the app enforces that itself at startup rather than trusting the operator to remember:
+**On Hobby, that option does not exist.** Standard Protection is the only scope Hobby offers, and it deliberately leaves the production domain public — there is no way to put this app's production URL behind Vercel Authentication on Hobby. `GHA_PASSWORD` is therefore **required**, and the app enforces that itself at startup rather than trusting the operator to remember. (The same enforcement applies self-hosted, once `GHA_ALLOWED_HOSTS` is set — see the callout near the top of this document. The bullets below say "serverless" because this section is about the Hobby plan specifically, but the underlying check is "reachable beyond loopback," not "on Vercel.")
 
-- Serverless (`VERCEL` set) with no `GHA_PASSWORD` and no `GHA_ALLOW_PUBLIC=1`: the app refuses to start. It never comes up unprotected.
+- Reachable beyond loopback (`VERCEL` set, or self-hosted with `GHA_ALLOWED_HOSTS` set) with no `GHA_PASSWORD` and no `GHA_ALLOW_PUBLIC=1`: the app refuses to start. It never comes up unprotected.
 - `GHA_PASSWORD` set but its trimmed length under 20 characters: the app also refuses to start. That floor is a refusal to run with almost nothing — see below for the actual target.
 
 `GHA_ALLOW_PUBLIC=1` is the deliberate override for a deployment with nothing private to protect. Set it and the app starts with no password at all — after which every tracked repository's name and its full traffic history, private repositories included, are readable by anyone who finds the URL. Set it only if that is genuinely what you want.

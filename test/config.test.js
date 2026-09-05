@@ -75,3 +75,59 @@ test('there is no password and no public override by default', () => {
   assert.equal(cfg.password, null);
   assert.equal(cfg.allowPublic, false);
 });
+
+// ---------------------------------------------------------------------
+// secureCookies / exposedBeyondLoopback: cookie security and the passphrase
+// floor must be decided by how the app is actually reachable, not by which
+// hosting provider set VERCEL. See server.js's `assertSafeToStart` for the
+// other half of this (the passphrase-floor gate that reads
+// `exposedBeyondLoopback` and `secureCookies`).
+// ---------------------------------------------------------------------
+
+test('neither VERCEL nor GHA_ALLOWED_HOSTS: not exposed, cookies default to insecure', () => {
+  const cfg = loadConfig({});
+  assert.equal(cfg.exposedBeyondLoopback, false);
+  assert.equal(cfg.secureCookies, false);
+});
+
+test('VERCEL set: exposed, cookies default to secure', () => {
+  const cfg = loadConfig({ VERCEL: '1' });
+  assert.equal(cfg.exposedBeyondLoopback, true);
+  assert.equal(cfg.secureCookies, true);
+});
+
+test('GHA_ALLOWED_HOSTS set without VERCEL (self-hosted behind a proxy): exposed, cookies default to secure', () => {
+  const cfg = loadConfig({ GHA_ALLOWED_HOSTS: 'analytics.example.com' });
+  assert.equal(cfg.serverless, false);
+  assert.equal(cfg.exposedBeyondLoopback, true);
+  assert.equal(cfg.secureCookies, true);
+});
+
+test('GHA_ALLOWED_HOSTS made entirely of blanks/commas does not count as exposed', () => {
+  const cfg = loadConfig({ GHA_ALLOWED_HOSTS: ' , , ' });
+  assert.deepEqual(cfg.allowedHosts, []);
+  assert.equal(cfg.exposedBeyondLoopback, false);
+  assert.equal(cfg.secureCookies, false);
+});
+
+test('GHA_SECURE_COOKIES=0 overrides the secure default to false even when VERCEL is set', () => {
+  const cfg = loadConfig({ VERCEL: '1', GHA_SECURE_COOKIES: '0' });
+  assert.equal(cfg.exposedBeyondLoopback, true, 'the underlying exposure signal is unaffected by the override');
+  assert.equal(cfg.secureCookies, false);
+});
+
+test('GHA_SECURE_COOKIES=false (word form) overrides the same way', () => {
+  const cfg = loadConfig({ VERCEL: '1', GHA_SECURE_COOKIES: 'false' });
+  assert.equal(cfg.secureCookies, false);
+});
+
+test('GHA_SECURE_COOKIES=1 forces secure cookies on with neither VERCEL nor GHA_ALLOWED_HOSTS set', () => {
+  const cfg = loadConfig({ GHA_SECURE_COOKIES: '1' });
+  assert.equal(cfg.exposedBeyondLoopback, false, 'the override does not retroactively make the app "exposed"');
+  assert.equal(cfg.secureCookies, true);
+});
+
+test('an empty GHA_SECURE_COOKIES falls back to the exposure-based default rather than forcing a value', () => {
+  assert.equal(loadConfig({ VERCEL: '1', GHA_SECURE_COOKIES: '' }).secureCookies, true);
+  assert.equal(loadConfig({ GHA_SECURE_COOKIES: '' }).secureCookies, false);
+});

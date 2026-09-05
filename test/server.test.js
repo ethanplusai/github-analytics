@@ -6,6 +6,7 @@ import { createSqliteDriver } from '../src/db/sqlite.js';
 import { Store } from '../src/store.js';
 import { Poller } from '../src/poller.js';
 import { createAuth } from '../src/auth.js';
+import { loadConfig } from '../src/config.js';
 
 const CONFIG = {
   dataDir: '/tmp/gha-test', dbPath: ':memory:', host: '127.0.0.1', port: 0,
@@ -344,13 +345,13 @@ test('a session cookie with the wrong name for the mode (plain cookie while serv
     const cookie = AUTH_ON.issueCookie({ secure: false }).split(';')[0];
     const res = await fetch(`${base}/api/status`, { headers: { cookie }, redirect: 'manual' });
     assert.equal(res.status, 401);
-  }, { auth: AUTH_ON, config: { serverless: true } });
+  }, { auth: AUTH_ON, config: { serverless: true, secureCookies: true } });
 });
 
 test('startup refuses a short passphrase in serverless mode, so entropy stands in for rate limiting', () => {
   const shortAuth = createAuth({ passphrase: 'too-short' });
   assert.throws(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: 'too-short', allowPublic: false }, shortAuth),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: 'too-short', allowPublic: false }, shortAuth),
     /20 characters/,
   );
 });
@@ -359,14 +360,14 @@ test('startup does not refuse a long passphrase in serverless mode', () => {
   const longPass = 'a-long-test-passphrase-1234567890';
   const longAuth = createAuth({ passphrase: longPass });
   assert.doesNotThrow(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: longPass, allowPublic: false }, longAuth),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: longPass, allowPublic: false }, longAuth),
   );
 });
 
 test('startup refuses a public serverless deployment with no passphrase', () => {
   const off = createAuth({ passphrase: null });
   assert.throws(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: null, allowPublic: false }, off),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: null, allowPublic: false }, off),
     /GHA_PASSWORD/,
   );
 });
@@ -374,14 +375,14 @@ test('startup refuses a public serverless deployment with no passphrase', () => 
 test('startup does not refuse locally with no passphrase', () => {
   const off = createAuth({ passphrase: null });
   assert.doesNotThrow(
-    () => assertSafeToStart({ ...CONFIG, serverless: false, password: null, allowPublic: false }, off),
+    () => assertSafeToStart({ ...CONFIG, serverless: false, exposedBeyondLoopback: false, password: null, allowPublic: false }, off),
   );
 });
 
 test('startup does not refuse a public serverless deployment when explicitly allowed', () => {
   const off = createAuth({ passphrase: null });
   assert.doesNotThrow(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: null, allowPublic: true }, off),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: null, allowPublic: true }, off),
   );
 });
 
@@ -393,7 +394,7 @@ test('startup refuses a passphrase padded to 20+ chars with TRAILING whitespace'
   const padded = 'abc' + ' '.repeat(20); // 23 raw chars, 3 effective
   const auth = createAuth({ passphrase: padded });
   assert.throws(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: padded, allowPublic: false }, auth),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: padded, allowPublic: false }, auth),
     /20 characters/,
   );
 });
@@ -402,7 +403,7 @@ test('startup refuses a passphrase padded to 20+ chars with LEADING whitespace',
   const padded = ' '.repeat(20) + 'abc';
   const auth = createAuth({ passphrase: padded });
   assert.throws(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: padded, allowPublic: false }, auth),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: padded, allowPublic: false }, auth),
     /20 characters/,
   );
 });
@@ -411,7 +412,7 @@ test('startup refuses a passphrase padded to 20+ chars with BOTH leading and tra
   const padded = '   ' + 'abc' + ' '.repeat(20);
   const auth = createAuth({ passphrase: padded });
   assert.throws(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: padded, allowPublic: false }, auth),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: padded, allowPublic: false }, auth),
     /20 characters/,
   );
 });
@@ -421,7 +422,7 @@ test('a whitespace-only passphrase is treated as no passphrase, so serverless re
   const auth = createAuth({ passphrase: whitespaceOnly });
   assert.equal(auth.enabled, false, 'a whitespace-only passphrase must not enable auth');
   assert.throws(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: whitespaceOnly, allowPublic: false }, auth),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: whitespaceOnly, allowPublic: false }, auth),
     /GHA_PASSWORD/,
     'must hit the "no passphrase configured" refusal, not silently allow a public server',
   );
@@ -431,6 +432,162 @@ test('a genuine 20+ character passphrase (no padding trickery) still starts norm
   const real = 'genuinely-twenty-char-plus-passphrase';
   const auth = createAuth({ passphrase: real });
   assert.doesNotThrow(
-    () => assertSafeToStart({ ...CONFIG, serverless: true, password: real, allowPublic: false }, auth),
+    () => assertSafeToStart({ ...CONFIG, serverless: true, exposedBeyondLoopback: true, password: real, allowPublic: false }, auth),
+  );
+});
+
+// ---------------------------------------------------------------------
+// FIX 1 regression: cookie security and the passphrase floor must be
+// decided by whether the app is reachable beyond loopback, not by whether
+// it happens to be running on Vercel. A self-hosted deployment behind an
+// nginx/Caddy proxy (GHA_ALLOWED_HOSTS set, VERCEL unset) is exactly as
+// public as a Vercel deployment.
+// ---------------------------------------------------------------------
+
+test('REGRESSION: a 7-character passphrase behind GHA_ALLOWED_HOSTS with no VERCEL must refuse to start', () => {
+  const config = loadConfig({ GHA_PASSWORD: 'shortpw', GHA_ALLOWED_HOSTS: 'analytics.example.com' });
+  assert.equal(config.serverless, false, 'sanity check: VERCEL is not set in this scenario');
+  assert.equal(config.exposedBeyondLoopback, true, 'a non-empty GHA_ALLOWED_HOSTS must count as exposed');
+  const auth = createAuth({ passphrase: config.password });
+  assert.throws(
+    () => assertSafeToStart(config, auth),
+    /20 characters/,
+  );
+});
+
+const LONG_PASSPHRASE = 'a-genuinely-long-passphrase-1234567890';
+
+test('assertSafeToStart via loadConfig: VERCEL set, short passphrase, no GHA_ALLOWED_HOSTS -> refuses', () => {
+  const config = loadConfig({ VERCEL: '1', GHA_PASSWORD: 'shortpw' });
+  const auth = createAuth({ passphrase: config.password });
+  assert.throws(() => assertSafeToStart(config, auth), /20 characters/);
+});
+
+test('assertSafeToStart via loadConfig: GHA_ALLOWED_HOSTS set, short passphrase, no VERCEL -> refuses (the regression scenario, generalised)', () => {
+  const config = loadConfig({ GHA_ALLOWED_HOSTS: 'analytics.example.com', GHA_PASSWORD: 'shortpw' });
+  const auth = createAuth({ passphrase: config.password });
+  assert.throws(() => assertSafeToStart(config, auth), /20 characters/);
+});
+
+test('assertSafeToStart via loadConfig: neither VERCEL nor GHA_ALLOWED_HOSTS, short passphrase -> starts fine (loopback-only)', () => {
+  const config = loadConfig({ GHA_PASSWORD: 'shortpw' });
+  const auth = createAuth({ passphrase: config.password });
+  assert.doesNotThrow(() => assertSafeToStart(config, auth));
+});
+
+test('assertSafeToStart via loadConfig: neither VERCEL nor GHA_ALLOWED_HOSTS, no passphrase at all -> starts fine, no refusal', () => {
+  const config = loadConfig({});
+  const auth = createAuth({ passphrase: config.password });
+  assert.equal(auth.enabled, false);
+  assert.doesNotThrow(() => assertSafeToStart(config, auth));
+});
+
+test('assertSafeToStart via loadConfig: GHA_ALLOWED_HOSTS set, no passphrase, no GHA_ALLOW_PUBLIC -> refuses (self-hosted public-with-no-boundary case)', () => {
+  const config = loadConfig({ GHA_ALLOWED_HOSTS: 'analytics.example.com' });
+  const auth = createAuth({ passphrase: config.password });
+  assert.throws(() => assertSafeToStart(config, auth), /GHA_PASSWORD/);
+});
+
+test('assertSafeToStart via loadConfig: GHA_ALLOWED_HOSTS set, no passphrase, GHA_ALLOW_PUBLIC=1 -> starts (operator relying on proxy auth instead)', () => {
+  const config = loadConfig({ GHA_ALLOWED_HOSTS: 'analytics.example.com', GHA_ALLOW_PUBLIC: '1' });
+  const auth = createAuth({ passphrase: config.password });
+  assert.doesNotThrow(() => assertSafeToStart(config, auth));
+});
+
+test('GHA_SECURE_COOKIES forcing secure=true locally still lets a short passphrase start (the override only affects cookies, not exposure)', () => {
+  const config = loadConfig({ GHA_SECURE_COOKIES: '1', GHA_PASSWORD: 'shortpw' });
+  assert.equal(config.secureCookies, true);
+  assert.equal(config.exposedBeyondLoopback, false, 'no VERCEL and no GHA_ALLOWED_HOSTS: still not exposed');
+  const auth = createAuth({ passphrase: config.password });
+  assert.doesNotThrow(() => assertSafeToStart(config, auth));
+});
+
+test('GHA_SECURE_COOKIES forcing secure=false on Vercel does not relax the passphrase floor', () => {
+  const config = loadConfig({ VERCEL: '1', GHA_SECURE_COOKIES: '0', GHA_PASSWORD: 'shortpw' });
+  assert.equal(config.secureCookies, false);
+  const auth = createAuth({ passphrase: config.password });
+  assert.throws(() => assertSafeToStart(config, auth), /20 characters/);
+});
+
+// End-to-end: the cookie the server actually issues carries the flags
+// `config.secureCookies` says it should, for each of the two public shapes.
+
+test('end-to-end: VERCEL set issues a Secure, __Host-prefixed cookie', async () => {
+  const config = loadConfig({ VERCEL: '1', GHA_PASSWORD: LONG_PASSPHRASE });
+  const auth = createAuth({ passphrase: config.password });
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/login`, {
+      method: 'POST', redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `password=${encodeURIComponent(LONG_PASSPHRASE)}`,
+    });
+    const cookie = res.headers.getSetCookie()[0];
+    assert.match(cookie, /^__Host-gha_session=/);
+    assert.match(cookie, /Secure/);
+  }, { auth, sleep: NO_SLEEP, config });
+});
+
+test('end-to-end: GHA_ALLOWED_HOSTS set with no VERCEL ALSO issues a Secure, __Host-prefixed cookie (the fix)', async () => {
+  const config = loadConfig({ GHA_ALLOWED_HOSTS: 'analytics.example.com', GHA_PASSWORD: LONG_PASSPHRASE });
+  assert.equal(config.serverless, false);
+  const auth = createAuth({ passphrase: config.password });
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/login`, {
+      method: 'POST', redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `password=${encodeURIComponent(LONG_PASSPHRASE)}`,
+    });
+    const cookie = res.headers.getSetCookie()[0];
+    assert.match(cookie, /^__Host-gha_session=/);
+    assert.match(cookie, /Secure/);
+  }, { auth, sleep: NO_SLEEP, config });
+});
+
+test('end-to-end: neither VERCEL nor GHA_ALLOWED_HOSTS issues a plain, non-Secure cookie (local behaviour unchanged)', async () => {
+  const config = loadConfig({ GHA_PASSWORD: LONG_PASSPHRASE });
+  const auth = createAuth({ passphrase: config.password });
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/login`, {
+      method: 'POST', redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `password=${encodeURIComponent(LONG_PASSPHRASE)}`,
+    });
+    const cookie = res.headers.getSetCookie()[0];
+    assert.match(cookie, /^gha_session=/);
+    assert.doesNotMatch(cookie, /__Host-/);
+    assert.doesNotMatch(cookie, /Secure/);
+  }, { auth, sleep: NO_SLEEP, config });
+});
+
+test('local behaviour with no GHA_PASSWORD and no GHA_ALLOWED_HOSTS is completely unchanged: no login, no cookie, no redirect', async () => {
+  const config = loadConfig({});
+  const auth = createAuth({ passphrase: config.password });
+  assert.equal(auth.enabled, false);
+  await withApp(async (base) => {
+    const res = await fetch(`${base}/`, { redirect: 'manual' });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.getSetCookie().length, 0);
+    const loginPage = await fetch(`${base}/login`);
+    assert.equal(loginPage.status, 404, '/login does not exist when auth is disabled');
+  }, { auth, config });
+});
+
+// ---------------------------------------------------------------------
+// FIX 2: the too-short-passphrase refusal must explain BOTH ways out when
+// GHA_ALLOW_PUBLIC=1 is already set — lengthening isn't the only option the
+// operator asked for.
+// ---------------------------------------------------------------------
+
+test('FIX 2: the short-passphrase refusal explains both lengthening AND unsetting GHA_PASSWORD when GHA_ALLOW_PUBLIC=1', () => {
+  const config = loadConfig({ VERCEL: '1', GHA_PASSWORD: 'shortpw', GHA_ALLOW_PUBLIC: '1' });
+  const auth = createAuth({ passphrase: config.password });
+  assert.throws(
+    () => assertSafeToStart(config, auth),
+    (err) => {
+      assert.match(err.message, /20 characters/);
+      assert.match(err.message, /unset GHA_PASSWORD/i);
+      assert.match(err.message, /GHA_ALLOW_PUBLIC/);
+      return true;
+    },
   );
 });
